@@ -1,0 +1,20 @@
+# Speech Bubbles Configuration
+
+# Default settings for speech bubbles
+defaults:
+  # Default display duration in milliseconds
+  duration: 5000
+  # Default maximum width in pixels
+  maxWidth: 250
+  # Default maximum height in pixels
+  maxHeight: 150
+  # Default text color (hex)
+  textColor: "#FFFFFF"
+  # Default background opacity (0.0 - 1.0)
+  backgroundOpacity: 0.9
+
+# Maximum concurrent bubbles per player
+maxBubblesPerPlayer: 10
+
+# Cleanup interval in seconds
+cleanupInterval: 30

@@ -1,0 +1,169 @@
+package dev.hycompanion.speechbubbles.model;
+
+import dev.hycompanion.speechbubbles.api.SpeechBubbleOptions;
+
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import java.util.UUID;
+
+/**
+ * Represents an active speech bubble.
+ * 
+ * This class stores all the data needed to display and track a speech bubble.
+ */
+public final class SpeechBubble {
+    
+    private final UUID bubbleId;
+    private final UUID entityUuid;
+    private final UUID playerUuid;
+    private final String text;
+    private final SpeechBubbleOptions options;
+    private final long createdAt;
+    
+    // Entity position in world (updated each tick)
+    private double entityX;
+    private double entityY;
+    private double entityZ;
+    
+    // Screen position (calculated from world position)
+    private int screenX = -1;
+    private int screenY = -1;
+    private boolean visible = false;
+
+    public SpeechBubble(
+            @Nonnull UUID bubbleId,
+            @Nonnull UUID entityUuid,
+            @Nonnull UUID playerUuid,
+            @Nonnull String text,
+            @Nonnull SpeechBubbleOptions options,
+            long createdAt) {
+        this.bubbleId = bubbleId;
+        this.entityUuid = entityUuid;
+        this.playerUuid = playerUuid;
+        this.text = text;
+        this.options = options;
+        this.createdAt = createdAt;
+        this.entityX = 0;
+        this.entityY = 0;
+        this.entityZ = 0;
+    }
+    
+    public SpeechBubble(
+            @Nonnull UUID bubbleId,
+            @Nonnull UUID entityUuid,
+            @Nonnull UUID playerUuid,
+            @Nonnull String text,
+            @Nonnull SpeechBubbleOptions options,
+            long createdAt,
+            double entityX, double entityY, double entityZ) {
+        this.bubbleId = bubbleId;
+        this.entityUuid = entityUuid;
+        this.playerUuid = playerUuid;
+        this.text = text;
+        this.options = options;
+        this.createdAt = createdAt;
+        this.entityX = entityX;
+        this.entityY = entityY;
+        this.entityZ = entityZ;
+    }
+
+    // ========== Getters ==========
+
+    @Nonnull
+    public UUID getBubbleId() {
+        return bubbleId;
+    }
+
+    @Nonnull
+    public UUID getEntityUuid() {
+        return entityUuid;
+    }
+
+    @Nonnull
+    public UUID getPlayerUuid() {
+        return playerUuid;
+    }
+
+    @Nonnull
+    public String getText() {
+        return text;
+    }
+
+    @Nonnull
+    public SpeechBubbleOptions getOptions() {
+        return options;
+    }
+
+    public long getCreatedAt() {
+        return createdAt;
+    }
+
+    // ========== Utility Methods ==========
+
+    /**
+     * Check if this bubble has expired based on its duration.
+     * 
+     * @param currentTime Current time in milliseconds
+     * @return true if the bubble has expired
+     */
+    public boolean isExpired(long currentTime) {
+        return currentTime >= createdAt + options.getDuration();
+    }
+
+    /**
+     * Get the remaining time before this bubble expires.
+     * 
+     * @param currentTime Current time in milliseconds
+     * @return remaining time in milliseconds (0 if expired)
+     */
+    public long getRemainingTime(long currentTime) {
+        long expiryTime = createdAt + options.getDuration();
+        return Math.max(0, expiryTime - currentTime);
+    }
+
+    @Override
+    public String toString() {
+        return "SpeechBubble{" +
+            "bubbleId=" + bubbleId +
+            ", entityUuid=" + entityUuid +
+            ", playerUuid=" + playerUuid +
+            ", text='" + text + '\'' +
+            ", createdAt=" + createdAt +
+            '}';
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        SpeechBubble that = (SpeechBubble) o;
+        return bubbleId.equals(that.bubbleId);
+    }
+
+    @Override
+    public int hashCode() {
+        return bubbleId.hashCode();
+    }
+    
+    // ========== Position Getters/Setters ==========
+    
+    public double getEntityX() { return entityX; }
+    public double getEntityY() { return entityY; }
+    public double getEntityZ() { return entityZ; }
+    
+    public void setEntityPosition(double x, double y, double z) {
+        this.entityX = x;
+        this.entityY = y;
+        this.entityZ = z;
+    }
+    
+    public int getScreenX() { return screenX; }
+    public int getScreenY() { return screenY; }
+    public boolean isVisible() { return visible; }
+    
+    public void setScreenPosition(int x, int y, boolean visible) {
+        this.screenX = x;
+        this.screenY = y;
+        this.visible = visible;
+    }
+}

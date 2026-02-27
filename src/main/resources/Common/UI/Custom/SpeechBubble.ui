@@ -1,0 +1,35 @@
+// Speech Bubble UI - 50% scale version
+// Original image: 626x349
+// Scaled: 313x175
+// Text area: offset 48,57 with size 525x177 (original)
+// Scaled text area: 24,29 with size 263x89
+
+@BubbleTexture = PatchStyle(
+    TexturePath: "speech_bubble.png",
+    Border: 25
+);
+
+Group #SpeechBubbleContainer {
+    Anchor: (Width: 313, Height: 175);
+    LayoutMode: Top;
+    Background: @BubbleTexture;
+    
+    // Text area - scaled 50% from original specs
+    // Original: offset 48,57 | size 525x177
+    // Scaled 50%: offset 24,29 | size 263x89
+    Group #TextArea {
+        Anchor: (Left: 24, Top: 29, Width: 263, Height: 89);
+        LayoutMode: Middle;
+        
+        Label #MessageText {
+            Text: "";
+            Style: (
+                FontSize: 24,
+                TextColor: #ffffff,
+                HorizontalAlignment: Center,
+                VerticalAlignment: Center,
+                Wrap: true
+            );
+        }
+    }
+}

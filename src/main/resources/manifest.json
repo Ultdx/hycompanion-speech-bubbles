@@ -1,0 +1,18 @@
+{
+    "Group": "dev.hycompanion.speech",
+    "Name": "SpeechBubbles",
+    "Version": "1.0.0",
+    "Description": "Speech bubble UI plugin for Hytale NPCs",
+    "Authors": [
+        {
+            "Name": "Hycompanion Team"
+        }
+    ],
+    "Website": "https://hycompanion.dev",
+    "ServerVersion": "2026.02.17-255364b8e",
+    "Dependencies": {},
+    "OptionalDependencies": {},
+    "DisabledByDefault": false,
+    "Main": "dev.hycompanion.speechbubbles.SpeechBubblesEntrypoint",
+    "IncludesAssetPack": true
+}
