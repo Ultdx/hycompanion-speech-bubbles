@@ -29,6 +29,12 @@ public final class SpeechBubble {
     private int screenX = -1;
     private int screenY = -1;
     private boolean visible = false;
+    
+    // Bubble dimensions (calculated from text) - defaults to original image size
+    private int bubbleWidth = 626;
+    private int bubbleHeight = 349;
+    private int tailTipX = 80;   // Original: 80/626
+    private int tailTipY = 319;  // Original: 319/349
 
     public SpeechBubble(
             @Nonnull UUID bubbleId,
@@ -165,5 +171,23 @@ public final class SpeechBubble {
         this.screenX = x;
         this.screenY = y;
         this.visible = visible;
+    }
+    
+    public void setVisible(boolean visible) {
+        this.visible = visible;
+    }
+    
+    // ========== Dimension Getters/Setters ==========
+    
+    public int getBubbleWidth() { return bubbleWidth; }
+    public int getBubbleHeight() { return bubbleHeight; }
+    public int getTailTipX() { return tailTipX; }
+    public int getTailTipY() { return tailTipY; }
+    
+    public void setDimensions(int bubbleWidth, int bubbleHeight, int tailTipX, int tailTipY) {
+        this.bubbleWidth = bubbleWidth;
+        this.bubbleHeight = bubbleHeight;
+        this.tailTipX = tailTipX;
+        this.tailTipY = tailTipY;
     }
 }

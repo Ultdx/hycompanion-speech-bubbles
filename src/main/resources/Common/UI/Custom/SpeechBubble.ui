@@ -1,8 +1,6 @@
-// Speech Bubble UI - 50% scale version
+// Speech Bubble UI - Dynamic sizing based on text length
 // Original image: 626x349
-// Scaled: 313x175
-// Text area: offset 48,57 with size 525x177 (original)
-// Scaled text area: 24,29 with size 263x89
+// Supports dynamic width and height based on content
 
 @BubbleTexture = PatchStyle(
     TexturePath: "speech_bubble.png",
@@ -10,15 +8,13 @@
 );
 
 Group #SpeechBubbleContainer {
-    Anchor: (Width: 313, Height: 175);
+    // Anchor will be set dynamically from Java code
     LayoutMode: Top;
     Background: @BubbleTexture;
     
-    // Text area - scaled 50% from original specs
-    // Original: offset 48,57 | size 525x177
-    // Scaled 50%: offset 24,29 | size 263x89
+    // Text area - dimensions set dynamically based on text
     Group #TextArea {
-        Anchor: (Left: 24, Top: 29, Width: 263, Height: 89);
+        // Anchor (Left, Top, Width, Height) set dynamically from Java
         LayoutMode: Middle;
         
         Label #MessageText {

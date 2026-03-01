@@ -19,16 +19,18 @@ public final class SpeechBubbleOptions {
     
     // Default values
     public static final long DEFAULT_DURATION = 5000; // 5 seconds
-    public static final int DEFAULT_MAX_WIDTH = 250;   // pixels
-    public static final int DEFAULT_MAX_HEIGHT = 150;  // pixels
+    public static final int DEFAULT_MAX_WIDTH = 626;   // Original bubble image width
+    public static final int DEFAULT_MAX_HEIGHT = 349;  // Original bubble image height
     public static final String DEFAULT_TEXT_COLOR = "#FFFFFF";
     public static final float DEFAULT_BACKGROUND_OPACITY = 0.9f;
+    public static final float DEFAULT_FOV = 75.0f;     // Default field of view in degrees
 
     private Long duration;
     private Integer maxWidth;
     private Integer maxHeight;
     private String textColor;
     private Float backgroundOpacity;
+    private Float fov;
 
     /**
      * Create new options with all defaults.
@@ -51,24 +53,24 @@ public final class SpeechBubbleOptions {
     /**
      * Set the maximum width of the bubble.
      * 
-     * @param width Width in pixels (100-500)
+     * @param width Width in pixels (100-626)
      * @return this for chaining
      */
     @Nonnull
     public SpeechBubbleOptions maxWidth(int width) {
-        this.maxWidth = Math.clamp(width, 100, 500);
+        this.maxWidth = Math.min(626, Math.max(100, width));
         return this;
     }
 
     /**
      * Set the maximum height of the bubble.
      * 
-     * @param height Height in pixels (50-300)
+     * @param height Height in pixels (50-349)
      * @return this for chaining
      */
     @Nonnull
     public SpeechBubbleOptions maxHeight(int height) {
-        this.maxHeight = Math.clamp(height, 50, 300);
+        this.maxHeight = Math.min(349, Math.max(50, height));
         return this;
     }
 
@@ -92,7 +94,19 @@ public final class SpeechBubbleOptions {
      */
     @Nonnull
     public SpeechBubbleOptions backgroundOpacity(float opacity) {
-        this.backgroundOpacity = Math.clamp(opacity, 0.0f, 1.0f);
+        this.backgroundOpacity = Math.min(1.0f, Math.max(0.0f, opacity));
+        return this;
+    }
+
+    /**
+     * Set the field of view for projection calculation.
+     * 
+     * @param fov Field of view in degrees (30-120)
+     * @return this for chaining
+     */
+    @Nonnull
+    public SpeechBubbleOptions fov(float fov) {
+        this.fov = Math.min(120.0f, Math.max(30.0f, fov));
         return this;
     }
 
@@ -119,12 +133,16 @@ public final class SpeechBubbleOptions {
         return backgroundOpacity != null ? backgroundOpacity : DEFAULT_BACKGROUND_OPACITY;
     }
 
+    public float getFov() {
+        return fov != null ? fov : DEFAULT_FOV;
+    }
+
     /**
      * Check if any custom options were set.
      */
     public boolean hasCustomOptions() {
         return duration != null || maxWidth != null || maxHeight != null 
-            || textColor != null || backgroundOpacity != null;
+            || textColor != null || backgroundOpacity != null || fov != null;
     }
 
     /**
@@ -142,6 +160,7 @@ public final class SpeechBubbleOptions {
         merged.maxHeight = this.maxHeight != null ? this.maxHeight : other.maxHeight;
         merged.textColor = this.textColor != null ? this.textColor : other.textColor;
         merged.backgroundOpacity = this.backgroundOpacity != null ? this.backgroundOpacity : other.backgroundOpacity;
+        merged.fov = this.fov != null ? this.fov : other.fov;
         
         return merged;
     }

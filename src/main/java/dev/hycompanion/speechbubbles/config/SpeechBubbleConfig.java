@@ -14,12 +14,13 @@ public class SpeechBubbleConfig {
     
     // Default values
     private static final long DEFAULT_DURATION = 5000;
-    private static final int DEFAULT_MAX_WIDTH = 250;
-    private static final int DEFAULT_MAX_HEIGHT = 150;
+    private static final int DEFAULT_MAX_WIDTH = 626;   // Original bubble image width
+    private static final int DEFAULT_MAX_HEIGHT = 349;  // Original bubble image height
     private static final String DEFAULT_TEXT_COLOR = "#FFFFFF";
     private static final float DEFAULT_BACKGROUND_OPACITY = 0.9f;
     private static final int DEFAULT_MAX_BUBBLES_PER_PLAYER = 10;
     private static final int DEFAULT_CLEANUP_INTERVAL = 30;
+    private static final float DEFAULT_FOV = 75.0f;     // Default field of view in degrees
 
     private final long defaultDuration;
     private final int defaultMaxWidth;
@@ -28,6 +29,7 @@ public class SpeechBubbleConfig {
     private final float defaultBackgroundOpacity;
     private final int maxBubblesPerPlayer;
     private final int cleanupInterval;
+    private final float fov;
 
     private SpeechBubbleConfig(Builder builder) {
         this.defaultDuration = builder.defaultDuration;
@@ -37,6 +39,7 @@ public class SpeechBubbleConfig {
         this.defaultBackgroundOpacity = builder.defaultBackgroundOpacity;
         this.maxBubblesPerPlayer = builder.maxBubblesPerPlayer;
         this.cleanupInterval = builder.cleanupInterval;
+        this.fov = builder.fov;
     }
 
     // ========== Getters ==========
@@ -69,6 +72,10 @@ public class SpeechBubbleConfig {
         return cleanupInterval;
     }
 
+    public float getFov() {
+        return fov;
+    }
+
     // ========== Loading ==========
 
     /**
@@ -84,15 +91,31 @@ public class SpeechBubbleConfig {
         
         if (!Files.exists(configPath)) {
             // Return defaults
+            System.out.println("[SpeechBubbles] Config file not found, using defaults: maxWidth=" 
+                + DEFAULT_MAX_WIDTH + ", maxHeight=" + DEFAULT_MAX_HEIGHT
+                + ", fov=" + DEFAULT_FOV);
             return builder.build();
         }
         
+        System.out.println("[SpeechBubbles] Loading config from: " + configPath);
         String content = Files.readString(configPath);
+        System.out.println("[SpeechBubbles] Config content:\n" + content);
         
         // Simple YAML parsing for our specific format
         parseYaml(content, builder);
         
-        return builder.build();
+        SpeechBubbleConfig config = builder.build();
+        System.out.println("[SpeechBubbles] Config loaded: maxWidth=" + config.getDefaultMaxWidth() 
+            + ", maxHeight=" + config.getDefaultMaxHeight()
+            + ", fov=" + config.getFov());
+        
+        // Warn if using old default values
+        if (config.getDefaultMaxWidth() == 250 || config.getDefaultMaxHeight() == 150) {
+            System.err.println("[SpeechBubbles] WARNING: Config has old default values (250x150). "
+                + "Consider updating to new defaults (626x349) or delete config file to regenerate.");
+        }
+        
+        return config;
     }
 
     /**
@@ -157,6 +180,9 @@ public class SpeechBubbleConfig {
                     case "backgroundOpacity":
                         builder.defaultBackgroundOpacity = Float.parseFloat(value);
                         break;
+                    case "fov":
+                        builder.fov = Float.parseFloat(value);
+                        break;
                 }
             } else if (section.isEmpty()) {
                 switch (key) {
@@ -182,10 +208,15 @@ public class SpeechBubbleConfig {
         private String defaultTextColor = DEFAULT_TEXT_COLOR;
         private float defaultBackgroundOpacity = DEFAULT_BACKGROUND_OPACITY;
         private int maxBubblesPerPlayer = DEFAULT_MAX_BUBBLES_PER_PLAYER;
+        private float fov = DEFAULT_FOV;
         private int cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
 
         SpeechBubbleConfig build() {
             return new SpeechBubbleConfig(this);
         }
+    }
+
+    public static float getDefaultFov() {
+        return DEFAULT_FOV;
     }
 }

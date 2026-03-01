@@ -178,14 +178,16 @@ public class SpeechBubblesEntrypoint extends JavaPlugin {
                         defaults:
                           # Default display duration in milliseconds
                           duration: 5000
-                          # Default maximum width in pixels
-                          maxWidth: 250
-                          # Default maximum height in pixels
-                          maxHeight: 150
+                          # Default maximum width in pixels (626 = original bubble image width)
+                          maxWidth: 626
+                          # Default maximum height in pixels (349 = original bubble image height)
+                          maxHeight: 349
                           # Default text color (hex)
                           textColor: "#FFFFFF"
                           # Default background opacity (0.0 - 1.0)
                           backgroundOpacity: 0.9
+                          # Field of view in degrees (for 3D to screen projection)
+                          fov: 75.0
                         
                         # Maximum concurrent bubbles per player
                         maxBubblesPerPlayer: 10
