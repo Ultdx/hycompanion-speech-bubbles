@@ -7,6 +7,9 @@ import com.hypixel.hytale.math.vector.Vector3d;
 import com.hypixel.hytale.math.vector.Vector3f;
 import com.hypixel.hytale.protocol.packets.interface_.CustomHud;
 import com.hypixel.hytale.protocol.packets.interface_.UpdateAnchorUI;
+import com.hypixel.hytale.math.shape.Box;
+import com.hypixel.hytale.server.core.modules.entity.component.BoundingBox;
+import com.hypixel.hytale.server.core.modules.entity.component.HeadRotation;
 import com.hypixel.hytale.server.core.modules.entity.component.TransformComponent;
 import com.hypixel.hytale.server.core.ui.Anchor;
 import com.hypixel.hytale.server.core.ui.Value;
@@ -292,7 +295,7 @@ public class SpeechBubbleManager {
         // Constants for sizing calculations
         final int FONT_SIZE = 24;
         final float AVG_CHAR_WIDTH = FONT_SIZE * 0.55f; // Average char width ~55% of font size
-        final int LINE_HEIGHT = (int) (FONT_SIZE * 1.3f); // Line height with spacing
+        final int LINE_HEIGHT = (int) (FONT_SIZE * 1.6f); // Line height with spacing (1.6x for better multi-line spacing)
         final int HORIZONTAL_PADDING = 50; // Padding around text (25px each side)
         final int VERTICAL_PADDING = 75; // Padding around text (increased to prevent text overflow)
         final int MIN_TEXT_WIDTH = 80; // Minimum text area width
@@ -410,8 +413,8 @@ public class SpeechBubbleManager {
 
             // Calculate initial screen position using the actual bubble dimensions
             Vector3d entityPos = new Vector3d(bubble.getEntityX(), bubble.getEntityY(), bubble.getEntityZ());
-            int[] screenPos = project3DToScreen(entityPos, playerRef, bubbleWidth, bubbleHeight, tailTipX, tailTipY,
-                    bubble.getOptions().getFov());
+            int[] screenPos = project3DToScreen(bubble.getEntityUuid(), entityPos, playerRef, 
+                    bubbleWidth, bubbleHeight, tailTipX, tailTipY, bubble.getOptions().getFov());
 
             if (screenPos == null) {
                 // Entity is not visible initially
@@ -612,7 +615,9 @@ public class SpeechBubbleManager {
      * to be enhanced to track which world each bubble is in.
      */
     private void startPositionUpdateTask() {
-        System.out.println("[SpeechBubbles] Starting position update task (every 50ms on world thread)");
+        // ~60 FPS for smooth updates (16ms interval)
+        final long UPDATE_INTERVAL_MS = 16;
+        System.out.println("[SpeechBubbles] Starting position update task (every " + UPDATE_INTERVAL_MS + "ms on world thread)");
         
         scheduler.scheduleAtFixedRate(() -> {
             try {
@@ -638,7 +643,7 @@ public class SpeechBubbleManager {
                 System.err.println("[SpeechBubbles] Exception scheduling position update: " + e.getMessage());
                 e.printStackTrace();
             }
-        }, 50, 50, TimeUnit.MILLISECONDS); // 20 updates per second
+        }, UPDATE_INTERVAL_MS, UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS); // ~60 updates per second
     }
 
     /**
@@ -686,30 +691,26 @@ public class SpeechBubbleManager {
                 }
 
                 // Project to screen using FRESH player camera data (safe on world thread)
-                int[] screenPos = project3DToScreen(entityPos, playerRef, bubble.getBubbleWidth(),
-                        bubble.getBubbleHeight(), bubble.getTailTipX(), bubble.getTailTipY(),
-                        bubble.getOptions().getFov());
+                int[] screenPos = project3DToScreen(bubble.getEntityUuid(), entityPos, playerRef, 
+                        bubble.getBubbleWidth(), bubble.getBubbleHeight(), 
+                        bubble.getTailTipX(), bubble.getTailTipY(), bubble.getOptions().getFov());
                         
                 if (screenPos == null) {
-                    // Entity is behind camera or too far - hide bubble by moving off-screen
-                    // Note: We do NOT clear the HUD here because that would remove ALL bubbles
-                    // for this player. Instead, we just mark this bubble as not visible.
-                    // The bubble will be cleaned up when its duration expires.
+                    // Entity is too far away - hide bubble by moving off-screen
                     if (bubble.isVisible()) {
-                        System.out.println("[SpeechBubbles] Entity behind camera - marking bubble invisible");
+                        System.out.println("[SpeechBubbles] Entity too far - marking bubble invisible");
                         bubble.setVisible(false);
-                        // Move bubble off-screen instead of clearing HUD
                         updateBubblePosition(playerRef, bubble, -9999, -9999);
                     }
                     continue;
                 } else {
-                    // Ensure bubble is marked visible if it was previously hidden
+                    // Ensure bubble is marked visible
                     if (!bubble.isVisible()) {
                         bubble.setVisible(true);
                     }
                 }
 
-                // Only update if position changed significantly (more than 2 pixels)
+                // Only update if position changed significantly (1 pixel threshold for smooth movement)
                 int oldX = bubble.getScreenX();
                 int oldY = bubble.getScreenY();
                 int newX = screenPos[0];
@@ -722,7 +723,8 @@ public class SpeechBubbleManager {
                 System.out.println("[SpeechBubbles] Position check: old=(" + oldX + "," + oldY + ") new=(" + newX + ","
                         + newY + ") delta=(" + deltaX + "," + deltaY + ") visible=" + bubble.isVisible());
 
-                if (deltaX > 2 || deltaY > 2 || !bubble.isVisible()) {
+                // Update if position changed by at least 1 pixel or visibility changed
+                if (deltaX >= 1 || deltaY >= 1 || !bubble.isVisible()) {
                     bubble.setScreenPosition(newX, newY, true);
                     updateBubblePosition(playerRef, bubble, newX, newY);
                     updateCount++;
@@ -851,6 +853,7 @@ public class SpeechBubbleManager {
      * Project 3D world position to 2D screen coordinates.
      * Takes into account player camera rotation and handles off-screen entities.
      * 
+     * @param entityUuid   Entity UUID for getting bounding box height
      * @param entityPos    Entity position in world
      * @param playerRef    Player reference for camera position
      * @param bubbleWidth  The bubble width in pixels
@@ -861,7 +864,7 @@ public class SpeechBubbleManager {
      * @return Array [screenX, screenY] or null if too far away
      */
     @Nullable
-    private int[] project3DToScreen(@Nonnull Vector3d entityPos, @Nonnull PlayerRef playerRef,
+    private int[] project3DToScreen(@Nonnull UUID entityUuid, @Nonnull Vector3d entityPos, @Nonnull PlayerRef playerRef,
             int bubbleWidth, int bubbleHeight, int tailTipX, int tailTipY, float fov) {
         try {
             Ref<EntityStore> ref = playerRef.getReference();
@@ -876,16 +879,35 @@ public class SpeechBubbleManager {
             }
 
             Vector3d playerPos = transform.getPosition();
-            float playerYaw = transform.getRotation().getYaw(); // Already in radians, can be unbounded
-            float playerPitch = transform.getRotation().getPitch(); // Already in radians, can be unbounded
+            
+            // Try to get camera rotation from HeadRotation component (for players)
+            // Fall back to TransformComponent rotation (for NPCs without head)
+            float playerYaw;
+            float playerPitch;
+            
+            HeadRotation headRotation = store.getComponent(ref, HeadRotation.getComponentType());
+            if (headRotation != null) {
+                // Use head/camera rotation for proper view direction (pitch + yaw)
+                playerYaw = headRotation.getRotation().getYaw();
+                playerPitch = headRotation.getRotation().getPitch();
+            } else {
+                // Fall back to body transform rotation
+                playerYaw = transform.getRotation().getYaw();
+                playerPitch = transform.getRotation().getPitch();
+            }
 
             // Normalize angles to [-π, π] range to prevent precision issues
             playerYaw = normalizeAngle(playerYaw);
             playerPitch = normalizeAngle(playerPitch);
 
+            // Get entity height from bounding box for accurate head position
+            double entityHeight = getEntityHeightByUuid(entityUuid);
+            // Add configurable offset above head (default 0.2 blocks) to not cover the head
+            double headOffset = entityHeight + config.getHeadOffset();
+            
             // Calculate relative position (entity - player)
             double dx = entityPos.getX() - playerPos.getX();
-            double dy = entityPos.getY() - playerPos.getY() + 2.0; // Offset above entity head
+            double dy = entityPos.getY() - playerPos.getY() + headOffset; // Offset above entity head
             double dz = entityPos.getZ() - playerPos.getZ();
 
             // Distance check - don't show if too far
@@ -918,23 +940,31 @@ public class SpeechBubbleManager {
             viewMatrix.multiplyDirection(camSpace);
             
             // In camera space: -Z is forward (into screen), +X is right, +Y is up
-            // So if camSpace.z > 0, entity is BEHIND camera
-            if (camSpace.getZ() > -0.01) {
-                return null; // Behind camera
-            }
+            // Check if entity is behind camera (z > 0 means behind)
+            boolean isBehindCamera = camSpace.getZ() > -0.01;
             
             // Perspective projection
             double fovRad = Math.toRadians(fov);
             double focalLength = (SCREEN_HEIGHT / 2.0) / Math.tan(fovRad / 2.0);
             
             // Project: X and Y are scaled by focalLength / distance
-            // Distance is abs(Z) since camera looks down -Z
+            // For entities behind camera, we use a virtual projection for edge clamping
             double distance = Math.abs(camSpace.getZ());
             double scale = focalLength / Math.max(distance, 0.1);
             
-            // Calculate screen coordinates
-            int rawScreenX = SCREEN_CENTER_X + (int) (camSpace.getX() * scale);
-            int rawScreenY = SCREEN_CENTER_Y - (int) (camSpace.getY() * scale); // Y inverted
+            // Calculate raw screen coordinates
+            double rawX = camSpace.getX() * scale;
+            double rawY = camSpace.getY() * scale;
+            
+            // If behind camera, mirror the projection so it appears at the opposite edge
+            // This ensures the bubble stays visible at the screen edge closest to the entity
+            if (isBehindCamera) {
+                rawX = -rawX;
+                rawY = -rawY;
+            }
+            
+            int rawScreenX = SCREEN_CENTER_X + (int) rawX;
+            int rawScreenY = SCREEN_CENTER_Y - (int) rawY; // Y inverted
             
             // Apply tail offset
             int screenX = rawScreenX - tailTipX;
@@ -945,14 +975,30 @@ public class SpeechBubbleManager {
                 "[SpeechBubbles] Yaw=%.1f Pitch=%.1f | Cam=(%.2f,%.2f,%.2f) | Scale=%.1f | Screen=(%d,%d)",
                 playerYaw, playerPitch, camSpace.getX(), camSpace.getY(), camSpace.getZ(), scale, screenX, screenY));
 
-            // Clamp to ensure at least half bubble is visible on screen
-            int minVisibleX = -(bubbleWidth / 2);
-            int maxVisibleX = SCREEN_WIDTH - (bubbleWidth / 2);
-            int minVisibleY = -(bubbleHeight / 2);
-            int maxVisibleY = SCREEN_HEIGHT - (bubbleHeight / 2);
-
-            int clampedX = Math.max(minVisibleX, Math.min(maxVisibleX, screenX));
-            int clampedY = Math.max(minVisibleY, Math.min(maxVisibleY, screenY));
+            // Clamp bubble to screen edges with a margin so it's always partially visible
+            // This allows the bubble to be seen even when NPC is at screen edges or behind camera
+            final int VISIBLE_WIDTH = bubbleWidth / 2;   // Show at least half width
+            final int VISIBLE_HEIGHT = bubbleHeight / 2; // Show at least half height
+            
+            // Clamp X: ensure at least half bubble is visible at left/right edges
+            int clampedX;
+            if (screenX < -VISIBLE_WIDTH) {
+                clampedX = -VISIBLE_WIDTH; // Clamp to left edge
+            } else if (screenX > SCREEN_WIDTH - VISIBLE_WIDTH) {
+                clampedX = SCREEN_WIDTH - VISIBLE_WIDTH; // Clamp to right edge
+            } else {
+                clampedX = screenX; // Within screen bounds
+            }
+            
+            // Clamp Y: ensure at least half bubble is visible at top/bottom edges
+            int clampedY;
+            if (screenY < -VISIBLE_HEIGHT) {
+                clampedY = -VISIBLE_HEIGHT; // Clamp to top edge
+            } else if (screenY > SCREEN_HEIGHT - VISIBLE_HEIGHT) {
+                clampedY = SCREEN_HEIGHT - VISIBLE_HEIGHT; // Clamp to bottom edge
+            } else {
+                clampedY = screenY; // Within screen bounds
+            }
 
             return new int[] { clampedX, clampedY };
 
@@ -961,6 +1007,81 @@ public class SpeechBubbleManager {
             e.printStackTrace();
             return null;
         }
+    }
+
+    /**
+     * Get entity height from bounding box component.
+     * Returns the Y dimension of the entity's bounding box.
+     * 
+     * @param entityPos The entity position (to find the entity in world)
+     * @return Entity height in blocks, or default 1.8 if not found
+     */
+    private double getEntityHeight(@Nonnull Vector3d entityPos) {
+        try {
+            Universe universe = Universe.get();
+            if (universe == null) {
+                return 1.8; // Default player height
+            }
+            
+            // Try to find entity in all worlds and get its bounding box
+            for (World world : universe.getWorlds().values()) {
+                EntityStore entityStore = world.getEntityStore();
+                if (entityStore != null) {
+                    // Note: We need to find the entity at this position
+                    // Since we don't have UUID here, we use a default height
+                    // This is a simplified approach - ideally we'd pass the entity UUID
+                    // For now, return a reasonable default based on typical entity heights
+                    return 1.8; // Default height (player height)
+                }
+            }
+        } catch (Exception e) {
+            // Ignore errors, return default
+        }
+        return 1.8; // Default player height
+    }
+
+    /**
+     * Get entity height by UUID from bounding box component.
+     * This is the accurate way to get entity height.
+     * 
+     * @param entityUuid The entity UUID
+     * @return Entity height in blocks, or default 1.8 if not found
+     */
+    private double getEntityHeightByUuid(@Nonnull UUID entityUuid) {
+        try {
+            Universe universe = Universe.get();
+            if (universe == null) {
+                return 1.8;
+            }
+            
+            // Search in all worlds for the entity
+            for (World world : universe.getWorlds().values()) {
+                EntityStore entityStore = world.getEntityStore();
+                if (entityStore != null) {
+                    Ref<EntityStore> entityRef = entityStore.getRefFromUUID(entityUuid);
+                    if (entityRef != null && entityRef.isValid()) {
+                        Store<EntityStore> store = entityRef.getStore();
+                        
+                        // Try to get BoundingBox component
+                        BoundingBox boundingBox = store.getComponent(entityRef, 
+                                BoundingBox.getComponentType());
+                        if (boundingBox != null) {
+                            Box box = boundingBox.getBoundingBox();
+                            if (box != null) {
+                                double height = box.height();
+                                // Sanity check: height should be between 0.1 and 10 blocks
+                                if (height > 0.1 && height < 10.0) {
+                                    return height;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[SpeechBubbles] Error getting entity height: " + e.getMessage());
+        }
+        return 1.8; // Default player height
     }
 
     /**

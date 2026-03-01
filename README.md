@@ -5,9 +5,12 @@ A Hytale server plugin that provides floating speech bubble UI above NPCs and ot
 ## Features
 
 - 🎈 **Floating Speech Bubbles** - Display text bubbles anchored to any entity
+- 📍 **Edge Clamping** - Bubbles stay visible at screen edges when NPC is off-screen or behind camera
+- 📐 **3D Positioning** - Full 3D projection with pitch and yaw camera rotation support
+- 🏗️ **Dynamic Height** - Automatically detects entity height from bounding box
+- ⚡ **60 FPS Updates** - Smooth bubble tracking at ~60 updates per second
 - ⏱️ **Configurable Duration** - Set how long bubbles remain visible
-- 📐 **Customizable Dimensions** - Control max width and height
-- 🎨 **Styling Options** - Customize text color and background opacity
+- 🎨 **Styling Options** - Customize text color, background opacity, and bubble offset
 - 👥 **Player-Specific** - Bubbles are shown to specific players or all players
 - 🔄 **API for Other Plugins** - Simple API for integration with other plugins
 - 🧹 **Automatic Cleanup** - Bubbles auto-remove after duration expires
@@ -35,14 +38,18 @@ Edit `mods/dev.hycompanion_SpeechBubbles/config.yml`:
 defaults:
   # Default display duration in milliseconds
   duration: 5000
-  # Default maximum width in pixels
-  maxWidth: 250
-  # Default maximum height in pixels
-  maxHeight: 150
+  # Default maximum width in pixels (based on original bubble image)
+  maxWidth: 626
+  # Default maximum height in pixels (based on original bubble image)
+  maxHeight: 349
   # Default text color (hex)
   textColor: "#FFFFFF"
   # Default background opacity (0.0 - 1.0)
   backgroundOpacity: 0.9
+  # Field of view in degrees for 3D projection
+  fov: 75.0
+  # Offset above entity head in blocks (can be negative to lower the bubble)
+  headOffset: 0.2
 
 # Maximum concurrent bubbles per player
 maxBubblesPerPlayer: 10
@@ -50,6 +57,20 @@ maxBubblesPerPlayer: 10
 # Cleanup interval in seconds
 cleanupInterval: 30
 ```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `duration` | 5000 | Display duration in milliseconds |
+| `maxWidth` | 626 | Maximum bubble width in pixels |
+| `maxHeight` | 349 | Maximum bubble height in pixels |
+| `textColor` | "#FFFFFF" | Text color in hex format |
+| `backgroundOpacity` | 0.9 | Background opacity (0.0-1.0) |
+| `fov` | 75.0 | Field of view for 3D projection (degrees) |
+| `headOffset` | 0.2 | Vertical offset above entity head (blocks). Use negative values to lower the bubble |
+| `maxBubblesPerPlayer` | 10 | Maximum bubbles shown to one player |
+| `cleanupInterval` | 30 | Cleanup task interval in seconds |
 
 ## API Usage
 
@@ -77,7 +98,8 @@ SpeechBubbleAPI.showBubble(npcUuid, playerUuid, "Welcome!", 8000);
 SpeechBubbleOptions options = new SpeechBubbleOptions()
     .duration(10000)
     .maxWidth(300)
-    .textColor("#FFD700");
+    .textColor("#FFD700")
+    .fov(90.0f);
 SpeechBubbleAPI.showBubble(npcUuid, playerUuid, "Check this out!", options);
 ```
 
@@ -236,13 +258,14 @@ public class SpeechBubbleIntegration {
 
 #### SpeechBubbleOptions
 
-| Method | Default | Range |
-|--------|---------|-------|
-| `duration(ms)` | 5000 | 1000+ |
-| `maxWidth(px)` | 250 | 100-500 |
-| `maxHeight(px)` | 150 | 50-300 |
-| `textColor(hex)` | #FFFFFF | Any hex |
-| `backgroundOpacity()` | 0.9 | 0.0-1.0 |
+| Method | Default | Range | Description |
+|--------|---------|-------|-------------|
+| `duration(ms)` | 5000 | 1000+ | Display duration |
+| `maxWidth(px)` | 626 | 100-626 | Maximum width |
+| `maxHeight(px)` | 349 | 50-349 | Maximum height |
+| `textColor(hex)` | #FFFFFF | Any hex | Text color |
+| `backgroundOpacity()` | 0.9 | 0.0-1.0 | Background opacity |
+| `fov(degrees)` | 75.0 | 30-120 | Field of view for 3D projection |
 
 ## Integration with Hycompanion Plugin
 
@@ -276,13 +299,25 @@ The integration:
 
 ### How It Works
 
-1. The plugin uses Hytale's `UpdateAnchorUI` packet to display UI elements anchored to entities
-2. The `UICommandBuilder` constructs commands to:
-   - Append the SpeechBubble.ui asset
-   - Set dynamic text content
-   - Configure dimensions and styling
-3. Bubbles are automatically removed after their duration expires
-4. A cleanup task runs periodically to remove any missed bubbles
+1. **3D Projection**: The plugin uses proper 3D math to project world coordinates to screen coordinates:
+   - Uses `HeadRotation` component for accurate camera direction (pitch + yaw)
+   - Gets entity height from `BoundingBox` component
+   - Applies perspective projection with configurable FOV
+   - Handles edge cases (behind camera, off-screen)
+
+2. **Edge Clamping**: When entities are off-screen or behind the camera:
+   - Bubbles are clamped to screen edges
+   - At least half the bubble remains visible
+   - Smooth transitions as entities move around the player
+
+3. **UI Rendering**: Uses Hytale's `UpdateAnchorUI` packet to display UI elements:
+   - The `UICommandBuilder` constructs commands to append the SpeechBubble.ui asset
+   - Dynamic text content with proper line spacing (1.6x font size)
+   - Configurable dimensions and styling
+
+4. **Updates**: Position updates run at ~60 FPS (16ms interval) for smooth tracking
+
+5. **Cleanup**: Bubbles are automatically removed after their duration expires
 
 ### UI Asset
 
@@ -299,6 +334,8 @@ SpeechBubbles Plugin
 ├── api/
 │   ├── SpeechBubbleAPI.java         # Public API
 │   └── SpeechBubbleOptions.java     # Configuration options
+├── config/
+│   └── SpeechBubbleConfig.java      # Configuration loading
 ├── manager/
 │   └── SpeechBubbleManager.java     # Core bubble management
 └── resources/
@@ -339,6 +376,20 @@ mvn clean package
    - It gets packaged in the JAR automatically
 
 3. Check Hytale client console for UI errors (enable Diagnostic Mode in settings)
+
+### Bubble Position Too High/Low
+
+Adjust the `headOffset` configuration:
+- Positive values: Higher above the head (e.g., `0.5`)
+- Negative values: Lower/closer to head (e.g., `-0.5`, `-1.0`)
+- Default is `0.2` blocks above the detected entity height
+
+### Bubbles Jitter or Lag
+
+The plugin updates at ~60 FPS by default. If you experience lag:
+1. Check server tick rate
+2. Verify the entity position lookup isn't causing lag
+3. Consider reducing the number of concurrent bubbles
 
 ### Plugin Not Found
 

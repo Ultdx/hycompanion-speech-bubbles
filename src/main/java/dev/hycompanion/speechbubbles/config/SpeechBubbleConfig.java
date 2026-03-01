@@ -21,6 +21,7 @@ public class SpeechBubbleConfig {
     private static final int DEFAULT_MAX_BUBBLES_PER_PLAYER = 10;
     private static final int DEFAULT_CLEANUP_INTERVAL = 30;
     private static final float DEFAULT_FOV = 75.0f;     // Default field of view in degrees
+    private static final double DEFAULT_HEAD_OFFSET = 0.2; // Blocks above entity head
 
     private final long defaultDuration;
     private final int defaultMaxWidth;
@@ -30,6 +31,7 @@ public class SpeechBubbleConfig {
     private final int maxBubblesPerPlayer;
     private final int cleanupInterval;
     private final float fov;
+    private final double headOffset;
 
     private SpeechBubbleConfig(Builder builder) {
         this.defaultDuration = builder.defaultDuration;
@@ -40,6 +42,7 @@ public class SpeechBubbleConfig {
         this.maxBubblesPerPlayer = builder.maxBubblesPerPlayer;
         this.cleanupInterval = builder.cleanupInterval;
         this.fov = builder.fov;
+        this.headOffset = builder.headOffset;
     }
 
     // ========== Getters ==========
@@ -74,6 +77,10 @@ public class SpeechBubbleConfig {
 
     public float getFov() {
         return fov;
+    }
+
+    public double getHeadOffset() {
+        return headOffset;
     }
 
     // ========== Loading ==========
@@ -183,6 +190,9 @@ public class SpeechBubbleConfig {
                     case "fov":
                         builder.fov = Float.parseFloat(value);
                         break;
+                    case "headOffset":
+                        builder.headOffset = Double.parseDouble(value);
+                        break;
                 }
             } else if (section.isEmpty()) {
                 switch (key) {
@@ -210,6 +220,7 @@ public class SpeechBubbleConfig {
         private int maxBubblesPerPlayer = DEFAULT_MAX_BUBBLES_PER_PLAYER;
         private float fov = DEFAULT_FOV;
         private int cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
+        private double headOffset = DEFAULT_HEAD_OFFSET;
 
         SpeechBubbleConfig build() {
             return new SpeechBubbleConfig(this);
