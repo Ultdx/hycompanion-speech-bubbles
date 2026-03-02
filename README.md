@@ -45,7 +45,7 @@ defaults:
   # Field of view for 3D projection (degrees)
   fov: 75.0
   # Offset above entity head in blocks (can be negative)
-  headOffset: 0
+  headOffset: -0.75
 
 # Maximum visibility distance in blocks (bubble won't show if entity is farther)
 maxDistance: 25
@@ -279,3 +279,6 @@ Adjust `headOffset` in config:
 ## License
 
 MIT License - See LICENSE file for details
+
+## Repository (Source Code)
+https://github.com/Ultdx/hycompanion-speech-bubbles

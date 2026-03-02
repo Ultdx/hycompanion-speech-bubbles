@@ -22,7 +22,7 @@ public class SpeechBubbleConfig {
     private static final int DEFAULT_CLEANUP_INTERVAL = 30;
     private static final int DEFAULT_MAX_DISTANCE = 25; // Maximum visibility distance in blocks
     private static final float DEFAULT_FOV = 75.0f;     // Default field of view in degrees
-    private static final double DEFAULT_HEAD_OFFSET = 0.0; // Blocks above entity head (0 = right at head level)
+    private static final double DEFAULT_HEAD_OFFSET = -0.75; // Blocks above entity head (0 = right at head level)
 
     private final long defaultDuration;
     private final int defaultMaxWidth;
