@@ -1,20 +1,27 @@
-// Speech Bubble UI - Dynamic sizing based on text length
-// Original image: 626x349
-// Supports dynamic width and height based on content
+// Speech Bubble UI Template
+// This is a template that gets cloned for each bubble instance
+// Each bubble gets unique IDs via setObject commands
 
 @BubbleTexture = PatchStyle(
     TexturePath: "speech_bubble.png",
     Border: 25
 );
 
+// Template structure - actual instances are created via setObject with unique IDs
+// The server sends commands like:
+//   setObject("#Bubble_<uuid>.Anchor", anchor)
+//   setObject("#Bubble_<uuid> #TextArea.Anchor", textAreaAnchor)
+//   set("#Bubble_<uuid> #MessageText.Text", "Hello")
+
 Group #SpeechBubbleContainer {
-    // Anchor will be set dynamically from Java code
-    LayoutMode: Top;
+    // This template is never directly displayed
+    // It's used as a reference for the structure
+    Anchor: (Left: 0, Top: 0, Width: 626, Height: 349);
     Background: @BubbleTexture;
+    LayoutMode: Top;
     
-    // Text area - dimensions set dynamically based on text
     Group #TextArea {
-        // Anchor (Left, Top, Width, Height) set dynamically from Java
+        Anchor: (Left: 25, Top: 25, Width: 576, Height: 274);
         LayoutMode: Middle;
         
         Label #MessageText {

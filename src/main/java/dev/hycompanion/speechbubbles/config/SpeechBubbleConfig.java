@@ -18,18 +18,20 @@ public class SpeechBubbleConfig {
     private static final int DEFAULT_MAX_HEIGHT = 349;  // Original bubble image height
     private static final String DEFAULT_TEXT_COLOR = "#FFFFFF";
     private static final float DEFAULT_BACKGROUND_OPACITY = 0.9f;
-    private static final int DEFAULT_MAX_BUBBLES_PER_PLAYER = 10;
+
     private static final int DEFAULT_CLEANUP_INTERVAL = 30;
+    private static final int DEFAULT_MAX_DISTANCE = 25; // Maximum visibility distance in blocks
     private static final float DEFAULT_FOV = 75.0f;     // Default field of view in degrees
-    private static final double DEFAULT_HEAD_OFFSET = 0.2; // Blocks above entity head
+    private static final double DEFAULT_HEAD_OFFSET = 0.0; // Blocks above entity head (0 = right at head level)
 
     private final long defaultDuration;
     private final int defaultMaxWidth;
     private final int defaultMaxHeight;
     private final String defaultTextColor;
     private final float defaultBackgroundOpacity;
-    private final int maxBubblesPerPlayer;
+
     private final int cleanupInterval;
+    private final int maxDistance;
     private final float fov;
     private final double headOffset;
 
@@ -39,8 +41,9 @@ public class SpeechBubbleConfig {
         this.defaultMaxHeight = builder.defaultMaxHeight;
         this.defaultTextColor = builder.defaultTextColor;
         this.defaultBackgroundOpacity = builder.defaultBackgroundOpacity;
-        this.maxBubblesPerPlayer = builder.maxBubblesPerPlayer;
+
         this.cleanupInterval = builder.cleanupInterval;
+        this.maxDistance = builder.maxDistance;
         this.fov = builder.fov;
         this.headOffset = builder.headOffset;
     }
@@ -67,12 +70,13 @@ public class SpeechBubbleConfig {
         return defaultBackgroundOpacity;
     }
 
-    public int getMaxBubblesPerPlayer() {
-        return maxBubblesPerPlayer;
-    }
 
     public int getCleanupInterval() {
         return cleanupInterval;
+    }
+
+    public int getMaxDistance() {
+        return maxDistance;
     }
 
     public float getFov() {
@@ -196,11 +200,12 @@ public class SpeechBubbleConfig {
                 }
             } else if (section.isEmpty()) {
                 switch (key) {
-                    case "maxBubblesPerPlayer":
-                        builder.maxBubblesPerPlayer = Integer.parseInt(value);
-                        break;
+
                     case "cleanupInterval":
                         builder.cleanupInterval = Integer.parseInt(value);
+                        break;
+                    case "maxDistance":
+                        builder.maxDistance = Integer.parseInt(value);
                         break;
                 }
             }
@@ -217,9 +222,10 @@ public class SpeechBubbleConfig {
         private int defaultMaxHeight = DEFAULT_MAX_HEIGHT;
         private String defaultTextColor = DEFAULT_TEXT_COLOR;
         private float defaultBackgroundOpacity = DEFAULT_BACKGROUND_OPACITY;
-        private int maxBubblesPerPlayer = DEFAULT_MAX_BUBBLES_PER_PLAYER;
+
         private float fov = DEFAULT_FOV;
         private int cleanupInterval = DEFAULT_CLEANUP_INTERVAL;
+        private int maxDistance = DEFAULT_MAX_DISTANCE;
         private double headOffset = DEFAULT_HEAD_OFFSET;
 
         SpeechBubbleConfig build() {

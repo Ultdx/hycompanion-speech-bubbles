@@ -29,6 +29,9 @@ public final class SpeechBubble {
     private int screenX = -1;
     private int screenY = -1;
     private boolean visible = false;
+    private volatile boolean removing = false; // Flag to prevent race conditions during removal
+    
+
     
     // Bubble dimensions (calculated from text) - defaults to original image size
     private int bubbleWidth = 626;
@@ -175,6 +178,23 @@ public final class SpeechBubble {
     
     public void setVisible(boolean visible) {
         this.visible = visible;
+    }
+    
+    /**
+     * Check if this bubble is being removed (to prevent race conditions).
+     * 
+     * @return true if the bubble is in the process of being removed
+     */
+    public boolean isRemoving() {
+        return removing;
+    }
+    
+    /**
+     * Mark this bubble as being removed.
+     * This prevents position updates from being sent while the bubble is being cleaned up.
+     */
+    public void markRemoving() {
+        this.removing = true;
     }
     
     // ========== Dimension Getters/Setters ==========

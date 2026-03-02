@@ -101,25 +101,25 @@ public class SpeechBubbleManager {
 
         // Merge with defaults
         SpeechBubbleOptions defaultOptions = getDefaultOptions();
-        System.out.println("[SpeechBubbles] Config default maxWidth=" + config.getDefaultMaxWidth()
-                + ", maxHeight=" + config.getDefaultMaxHeight());
-        System.out.println("[SpeechBubbles] Options default maxWidth=" + defaultOptions.getMaxWidth()
-                + ", maxHeight=" + defaultOptions.getMaxHeight());
-        System.out.println("[SpeechBubbles] User provided options: " + (options != null ? "yes" : "no"));
-        if (options != null) {
-            System.out.println("[SpeechBubbles] User options maxWidth=" + options.getMaxWidth()
-                    + ", maxHeight=" + options.getMaxHeight());
-        }
+        // System.out.println("[SpeechBubbles] Config default maxWidth=" + config.getDefaultMaxWidth()
+        //         + ", maxHeight=" + config.getDefaultMaxHeight());
+        // System.out.println("[SpeechBubbles] Options default maxWidth=" + defaultOptions.getMaxWidth()
+        //         + ", maxHeight=" + defaultOptions.getMaxHeight());
+        // System.out.println("[SpeechBubbles] User provided options: " + (options != null ? "yes" : "no"));
+        // if (options != null) {
+        //     System.out.println("[SpeechBubbles] User options maxWidth=" + options.getMaxWidth()
+        //             + ", maxHeight=" + options.getMaxHeight());
+        // }
 
         SpeechBubbleOptions effectiveOptions = (options != null ? options : new SpeechBubbleOptions())
                 .merge(defaultOptions);
-        System.out.println("[SpeechBubbles] Effective options maxWidth=" + effectiveOptions.getMaxWidth()
-                + ", maxHeight=" + effectiveOptions.getMaxHeight());
+        // System.out.println("[SpeechBubbles] Effective options maxWidth=" + effectiveOptions.getMaxWidth()
+        //         + ", maxHeight=" + effectiveOptions.getMaxHeight());
 
-        // Check player bubble limit
+        // Only one bubble can be displayed at a time per player
+        // Remove any existing bubble for this player first
         Set<UUID> playerBubbleSet = playerBubbles.computeIfAbsent(playerUuid, k -> ConcurrentHashMap.newKeySet());
-        if (playerBubbleSet.size() >= config.getMaxBubblesPerPlayer()) {
-            // Remove oldest bubble for this player
+        if (!playerBubbleSet.isEmpty()) {
             removeOldestBubbleForPlayer(playerUuid);
         }
 
@@ -182,22 +182,48 @@ public class SpeechBubbleManager {
 
     /**
      * Hide all bubbles for a specific player.
+     * Clears the entire HUD.
      * 
      * @param playerUuid The player UUID
      * @return number of bubbles hidden
      */
     public int hideAllBubblesForPlayer(@Nonnull UUID playerUuid) {
-        Set<UUID> bubbleIds = playerBubbles.remove(playerUuid);
+        Set<UUID> bubbleIds = playerBubbles.get(playerUuid);
         if (bubbleIds == null || bubbleIds.isEmpty()) {
+            playerBubbles.remove(playerUuid);
             return 0;
         }
 
-        int count = 0;
-        for (UUID bubbleId : new ArrayList<>(bubbleIds)) {
-            if (hideBubble(bubbleId)) {
-                count++;
+        // Mark all bubbles as removing FIRST - this prevents position updates
+        for (UUID bubbleId : bubbleIds) {
+            SpeechBubble bubble = activeBubbles.get(bubbleId);
+            if (bubble != null) {
+                bubble.markRemoving();
             }
         }
+
+        // Send clear HUD command to player BEFORE removing from tracking
+        // This ensures no position updates are sent while clearing
+        try {
+            PlayerRef playerRef = Universe.get().getPlayer(playerUuid);
+            if (playerRef != null) {
+                CustomHud hudPacket = new CustomHud(
+                        true, // Clear entire HUD
+                        new UICommandBuilder().getCommands()
+                );
+                playerRef.getPacketHandler().writeNoCache(hudPacket);
+            }
+        } catch (Exception e) {
+            // Ignore errors
+        }
+
+        // NOW remove from tracking after UI is cleared
+        int count = 0;
+        for (UUID bubbleId : new ArrayList<>(bubbleIds)) {
+            removeBubble(bubbleId);
+            count++;
+        }
+        playerBubbles.remove(playerUuid);
         return count;
     }
 
@@ -233,12 +259,12 @@ public class SpeechBubbleManager {
         if (bubble == null) {
             return false;
         }
-
-        // Send clear command to player
-        sendClearBubble(bubble);
-
-        // Remove from tracking
+        
+        // Remove from tracking FIRST - this prevents position update task from seeing it
         removeBubble(bubbleId);
+
+        // Then clear HUD
+        sendClearBubble(bubble);
 
         return true;
     }
@@ -257,10 +283,28 @@ public class SpeechBubbleManager {
     public void shutdown() {
         shutdown = true;
 
-        // Hide all active bubbles
-        for (UUID bubbleId : new ArrayList<>(activeBubbles.keySet())) {
-            hideBubble(bubbleId);
+        // Clear entire HUD for all players with active bubbles
+        Set<UUID> affectedPlayers = new HashSet<>(playerBubbles.keySet());
+        for (UUID playerUuid : affectedPlayers) {
+            try {
+                PlayerRef playerRef = Universe.get().getPlayer(playerUuid);
+                if (playerRef != null) {
+                    // Send clear HUD command
+                    CustomHud hudPacket = new CustomHud(
+                            true, // Clear entire HUD
+                            new UICommandBuilder().getCommands()
+                    );
+                    playerRef.getPacketHandler().writeNoCache(hudPacket);
+                }
+            } catch (Exception e) {
+                // Ignore errors during shutdown
+            }
         }
+
+        // Clear all tracking
+        activeBubbles.clear();
+        playerBubbles.clear();
+        entityBubbles.clear();
 
         // Shutdown scheduler
         scheduler.shutdownNow();
@@ -287,10 +331,10 @@ public class SpeechBubbleManager {
      *         tailTipX, tailTipY]
      */
     private int[] calculateBubbleDimensions(@Nonnull String text, int maxWidth, int maxHeight) {
-        System.out.println("[SpeechBubbles] === calculateBubbleDimensions START ===");
-        System.out.println("[SpeechBubbles] Input text: \"" + text + "\"");
-        System.out.println("[SpeechBubbles] Input text length: " + text.length());
-        System.out.println("[SpeechBubbles] Input maxWidth: " + maxWidth + ", maxHeight: " + maxHeight);
+        // System.out.println("[SpeechBubbles] === calculateBubbleDimensions START ===");
+        // System.out.println("[SpeechBubbles] Input text: \"" + text + "\"");
+        // System.out.println("[SpeechBubbles] Input text length: " + text.length());
+        // System.out.println("[SpeechBubbles] Input maxWidth: " + maxWidth + ", maxHeight: " + maxHeight);
 
         // Constants for sizing calculations
         final int FONT_SIZE = 24;
@@ -303,49 +347,49 @@ public class SpeechBubbleManager {
         final int MAX_TEXT_WIDTH = maxWidth - HORIZONTAL_PADDING;
         final int MAX_TEXT_HEIGHT = maxHeight - VERTICAL_PADDING;
 
-        System.out.println("[SpeechBubbles] Constants: FONT_SIZE=" + FONT_SIZE + ", AVG_CHAR_WIDTH=" + AVG_CHAR_WIDTH
-                + ", LINE_HEIGHT=" + LINE_HEIGHT);
-        System.out.println(
-                "[SpeechBubbles] Padding: HORIZONTAL=" + HORIZONTAL_PADDING + ", VERTICAL=" + VERTICAL_PADDING);
-        System.out.println(
-                "[SpeechBubbles] Constraints: MIN_TEXT_WIDTH=" + MIN_TEXT_WIDTH + ", MAX_TEXT_WIDTH=" + MAX_TEXT_WIDTH
-                        + ", MIN_TEXT_HEIGHT=" + MIN_TEXT_HEIGHT + ", MAX_TEXT_HEIGHT=" + MAX_TEXT_HEIGHT);
+        // System.out.println("[SpeechBubbles] Constants: FONT_SIZE=" + FONT_SIZE + ", AVG_CHAR_WIDTH=" + AVG_CHAR_WIDTH
+        //         + ", LINE_HEIGHT=" + LINE_HEIGHT);
+        // System.out.println(
+        //         "[SpeechBubbles] Padding: HORIZONTAL=" + HORIZONTAL_PADDING + ", VERTICAL=" + VERTICAL_PADDING);
+        // System.out.println(
+        //         "[SpeechBubbles] Constraints: MIN_TEXT_WIDTH=" + MIN_TEXT_WIDTH + ", MAX_TEXT_WIDTH=" + MAX_TEXT_WIDTH
+        //                 + ", MIN_TEXT_HEIGHT=" + MIN_TEXT_HEIGHT + ", MAX_TEXT_HEIGHT=" + MAX_TEXT_HEIGHT);
 
         // Calculate text area width based on content
         int textLength = text.length();
         int estimatedTextWidth = (int) (textLength * AVG_CHAR_WIDTH);
-        System.out.println("[SpeechBubbles] estimatedTextWidth = " + textLength + " * " + AVG_CHAR_WIDTH + " = "
-                + estimatedTextWidth);
+        // System.out.println("[SpeechBubbles] estimatedTextWidth = " + textLength + " * " + AVG_CHAR_WIDTH + " = "
+        //         + estimatedTextWidth);
 
         // Clamp text width to constraints
         int textWidth = Math.max(MIN_TEXT_WIDTH, Math.min(estimatedTextWidth, MAX_TEXT_WIDTH));
-        System.out.println("[SpeechBubbles] textWidth after clamping: " + textWidth + " (min=" + MIN_TEXT_WIDTH
-                + ", max=" + MAX_TEXT_WIDTH + ")");
+        // System.out.println("[SpeechBubbles] textWidth after clamping: " + textWidth + " (min=" + MIN_TEXT_WIDTH
+        //         + ", max=" + MAX_TEXT_WIDTH + ")");
 
         // Calculate number of lines needed (approximate word wrapping)
         int charsPerLine = Math.max(1, (int) (textWidth / AVG_CHAR_WIDTH));
         int numLines = Math.max(1, (int) Math.ceil((double) textLength / charsPerLine));
-        System.out.println("[SpeechBubbles] charsPerLine=" + charsPerLine + ", numLines=" + numLines);
+        // System.out.println("[SpeechBubbles] charsPerLine=" + charsPerLine + ", numLines=" + numLines);
 
         // Calculate text height based on number of lines
         int textHeight = Math.max(MIN_TEXT_HEIGHT, Math.min(numLines * LINE_HEIGHT, MAX_TEXT_HEIGHT));
-        System.out.println("[SpeechBubbles] textHeight=" + textHeight + " (raw=" + (numLines * LINE_HEIGHT)
-                + ", min=" + MIN_TEXT_HEIGHT + ", max=" + MAX_TEXT_HEIGHT + ")");
+        // System.out.println("[SpeechBubbles] textHeight=" + textHeight + " (raw=" + (numLines * LINE_HEIGHT)
+        //         + ", min=" + MIN_TEXT_HEIGHT + ", max=" + MAX_TEXT_HEIGHT + ")");
 
         // Calculate bubble dimensions
         int bubbleWidth = textWidth + HORIZONTAL_PADDING;
         int bubbleHeight = textHeight + VERTICAL_PADDING;
-        System.out.println("[SpeechBubbles] bubbleWidth=" + bubbleWidth + " (textWidth=" + textWidth + " + padding="
-                + HORIZONTAL_PADDING + ")");
-        System.out.println("[SpeechBubbles] bubbleHeight=" + bubbleHeight + " (textHeight=" + textHeight + " + padding="
-                + VERTICAL_PADDING + ")");
+        // System.out.println("[SpeechBubbles] bubbleWidth=" + bubbleWidth + " (textWidth=" + textWidth + " + padding="
+        //         + HORIZONTAL_PADDING + ")");
+        // System.out.println("[SpeechBubbles] bubbleHeight=" + bubbleHeight + " (textHeight=" + textHeight + " + padding="
+        //         + VERTICAL_PADDING + ")");
 
         // Calculate tail tip position (proportional to bubble size)
         // Original image: tail tip at 80,319 on a 626x349 image
         int tailTipX = (int) (bubbleWidth * (80.0 / 626.0)); // ~12.8% of bubble width
         int tailTipY = (int) (bubbleHeight * (319.0 / 349.0)); // ~91.4% of bubble height
-        System.out.println("[SpeechBubbles] tailTipX=" + tailTipX + ", tailTipY=" + tailTipY);
-        System.out.println("[SpeechBubbles] === calculateBubbleDimensions END ===");
+        // System.out.println("[SpeechBubbles] tailTipX=" + tailTipX + ", tailTipY=" + tailTipY);
+        // System.out.println("[SpeechBubbles] === calculateBubbleDimensions END ===");
 
         return new int[] { bubbleWidth, bubbleHeight, textWidth, textHeight, tailTipX, tailTipY, numLines };
     }
@@ -383,11 +427,12 @@ public class SpeechBubbleManager {
 
     /**
      * Send the bubble UI to the player.
+     * Supports multiple simultaneous bubbles with unique IDs.
      */
     private boolean sendBubbleToPlayer(@Nonnull SpeechBubble bubble) {
 
-        System.out.println("[SpeechBubbles] Sending bubble to player " + bubble.getPlayerUuid() + " for entity "
-                + bubble.getEntityUuid());
+        System.out.println("[SpeechBubbles] Sending bubble " + bubble.getBubbleId() + " to player " 
+                + bubble.getPlayerUuid() + " for entity " + bubble.getEntityUuid());
 
         try {
             PlayerRef playerRef = Universe.get().getPlayer(bubble.getPlayerUuid());
@@ -425,7 +470,7 @@ public class SpeechBubbleManager {
 
             // Check if text needs truncation
             final int FONT_SIZE = 24;
-            final int LINE_HEIGHT = (int) (FONT_SIZE * 1.3f);
+            final int LINE_HEIGHT = (int) (FONT_SIZE * 1.6f);
             final int VERTICAL_PADDING = 75;
             int maxTextHeight = bubble.getOptions().getMaxHeight() - VERTICAL_PADDING;
             int maxLines = Math.max(1, maxTextHeight / LINE_HEIGHT);
@@ -437,51 +482,48 @@ public class SpeechBubbleManager {
 
             // Build UI commands
             UICommandBuilder commandBuilder = new UICommandBuilder();
-
-            // Append the UI document
+            
+            // Always clear HUD first when showing a new bubble
+            // This ensures only one bubble is visible at a time per player (prevents crashes)
+            CustomHud clearPacket = new CustomHud(true, new UICommandBuilder().getCommands());
+            playerRef.getPacketHandler().writeNoCache(clearPacket);
+            
+            // Append the SpeechBubble.ui
             commandBuilder.append("SpeechBubble.ui");
-
-            // Set the text content (possibly truncated)
-            commandBuilder.set("#MessageText.Text", displayText);
-
-            // Set text color if specified
-            String textColor = bubble.getOptions().getTextColor();
-            if (!textColor.equals(SpeechBubbleOptions.DEFAULT_TEXT_COLOR)) {
-                commandBuilder.set("#MessageText.Style.TextColor", textColor);
-            }
-
-            // Set dynamic text area dimensions
-            System.out.println("[SpeechBubbles] Setting #TextArea.Anchor: Left=25, Top=25, Width=" + textWidth
-                    + ", Height=" + textHeight);
-            Anchor textAreaAnchor = new Anchor();
-            textAreaAnchor.setLeft(Value.of(Integer.valueOf(25))); // Left padding
-            textAreaAnchor.setTop(Value.of(Integer.valueOf(25))); // Top padding
-            textAreaAnchor.setWidth(Value.of(Integer.valueOf(textWidth)));
-            textAreaAnchor.setHeight(Value.of(Integer.valueOf(textHeight)));
-            commandBuilder.setObject("#TextArea.Anchor", textAreaAnchor);
-
-            // Set container dimensions and position
-            System.out.println("[SpeechBubbles] Setting #SpeechBubbleContainer.Anchor: Left=" + screenPos[0] + ", Top="
-                    + screenPos[1]
-                    + ", Width=" + bubbleWidth + ", Height=" + bubbleHeight);
+            
+            // Set the main container anchor
             Anchor containerAnchor = new Anchor();
             containerAnchor.setLeft(Value.of(Integer.valueOf(screenPos[0])));
             containerAnchor.setTop(Value.of(Integer.valueOf(screenPos[1])));
             containerAnchor.setWidth(Value.of(Integer.valueOf(bubbleWidth)));
             containerAnchor.setHeight(Value.of(Integer.valueOf(bubbleHeight)));
             commandBuilder.setObject("#SpeechBubbleContainer.Anchor", containerAnchor);
+        
+            // Set text area dimensions
+            Anchor textAreaAnchor = new Anchor();
+            textAreaAnchor.setLeft(Value.of(Integer.valueOf(25)));
+            textAreaAnchor.setTop(Value.of(Integer.valueOf(25)));
+            textAreaAnchor.setWidth(Value.of(Integer.valueOf(textWidth)));
+            textAreaAnchor.setHeight(Value.of(Integer.valueOf(textHeight)));
+            commandBuilder.setObject("#TextArea.Anchor", textAreaAnchor);
+            
+            // Set the text
+            commandBuilder.set("#MessageText.Text", escapeForUI(displayText));
+            
+            // Set text color if specified
+            if (!bubble.getOptions().getTextColor().equals(SpeechBubbleOptions.DEFAULT_TEXT_COLOR)) {
+                commandBuilder.set("#MessageText.Style.TextColor", bubble.getOptions().getTextColor());
+            }
 
             CustomHud hudPacket = new CustomHud(
-                    false, // Don't clear existing HUD
+                    false, // Don't clear existing HUD (we already cleared above)
                     commandBuilder.getCommands());
 
             // Send to player
             playerRef.getPacketHandler().writeNoCache(hudPacket);
 
-            System.out.println("[SpeechBubbles] Bubble SENT to player " + bubble.getPlayerUuid() +
-                    " at screen (" + screenPos[0] + ", " + screenPos[1] + ") with container size " + bubbleWidth + "x"
-                    + bubbleHeight
-                    + ", text area " + textWidth + "x" + textHeight);
+            System.out.println("[SpeechBubbles] Bubble SENT " + bubble.getBubbleId() + 
+                    " at screen (" + screenPos[0] + ", " + screenPos[1] + ")");
 
             return true;
 
@@ -492,6 +534,16 @@ public class SpeechBubbleManager {
             e.printStackTrace();
             return false;
         }
+    }
+    
+    /**
+     * Escape text for UI string (handle quotes and special characters).
+     */
+    private String escapeForUI(@Nonnull String text) {
+        return text.replace("\\", "\\\\")
+                   .replace("\"", "\\\"")
+                   .replace("\n", "\\n")
+                   .replace("\r", "");
     }
 
     /**
@@ -504,13 +556,11 @@ public class SpeechBubbleManager {
                 return;
             }
 
-            // Create clear packet - clear HUD
-            // Use empty command array instead of null to avoid NRE on client
+            // Clear entire HUD (simple and reliable for single-bubble mode)
             CustomHud hudPacket = new CustomHud(
                     true, // Clear HUD
-                    new UICommandBuilder().getCommands() // Empty commands
+                    new UICommandBuilder().getCommands()
             );
-
             playerRef.getPacketHandler().writeNoCache(hudPacket);
 
         } catch (Exception e) {
@@ -655,10 +705,10 @@ public class SpeechBubbleManager {
     private void updateBubblePositions() {
         int bubbleCount = activeBubbles.size();
 
-        // Debug: log when task runs
-        if (bubbleCount > 0) {
-            System.out.println("[SpeechBubbles] updateBubblePositions running with " + bubbleCount + " active bubbles");
-        }
+        // // Debug: log when task runs
+        // if (bubbleCount > 0) {
+        //     System.out.println("[SpeechBubbles] updateBubblePositions running with " + bubbleCount + " active bubbles");
+        // }
 
         if (activeBubbles.isEmpty()) {
             return;
@@ -668,11 +718,18 @@ public class SpeechBubbleManager {
 
         for (SpeechBubble bubble : activeBubbles.values()) {
             try {
-                System.out.println("[SpeechBubbles] Processing bubble for entity " + bubble.getEntityUuid());
+                // Verify bubble is still active and not being removed
+                if (!activeBubbles.containsKey(bubble.getBubbleId()) || bubble.isRemoving()) {
+                    continue;
+                }
+                
+                //System.out.println("[SpeechBubbles] Processing bubble for entity " + bubble.getEntityUuid());
 
                 PlayerRef playerRef = Universe.get().getPlayer(bubble.getPlayerUuid());
                 if (playerRef == null) {
-                    System.out.println("[SpeechBubbles] Player not found for bubble");
+                    System.out.println("[SpeechBubbles] Player not found for bubble, removing it");
+                    // Player disconnected - remove the bubble to prevent crash
+                    hideBubble(bubble.getBubbleId());
                     continue;
                 }
 
@@ -681,12 +738,12 @@ public class SpeechBubbleManager {
                 if (entityPos != null) {
                     // Update stored position
                     bubble.setEntityPosition(entityPos.getX(), entityPos.getY(), entityPos.getZ());
-                    System.out.println("[SpeechBubbles] Entity pos: " + entityPos + ", bubble stored pos: ("
-                            + bubble.getEntityX() + "," + bubble.getEntityY() + "," + bubble.getEntityZ() + ")");
+                    //System.out.println("[SpeechBubbles] Entity pos: " + entityPos + ", bubble stored pos: ("
+                     //       + bubble.getEntityX() + "," + bubble.getEntityY() + "," + bubble.getEntityZ() + ")");
                 } else {
                     // Use stored position if entity not found
-                    System.out.println("[SpeechBubbles] Entity position not found, using stored position: ("
-                            + bubble.getEntityX() + "," + bubble.getEntityY() + "," + bubble.getEntityZ() + ")");
+                    //System.out.println("[SpeechBubbles] Entity position not found, using stored position: ("
+                    //        + bubble.getEntityX() + "," + bubble.getEntityY() + "," + bubble.getEntityZ() + ")");
                     entityPos = new Vector3d(bubble.getEntityX(), bubble.getEntityY(), bubble.getEntityZ());
                 }
 
@@ -720,8 +777,8 @@ public class SpeechBubbleManager {
                 int deltaY = Math.abs(newY - oldY);
 
                 // Debug: always log position check
-                System.out.println("[SpeechBubbles] Position check: old=(" + oldX + "," + oldY + ") new=(" + newX + ","
-                        + newY + ") delta=(" + deltaX + "," + deltaY + ") visible=" + bubble.isVisible());
+                // System.out.println("[SpeechBubbles] Position check: old=(" + oldX + "," + oldY + ") new=(" + newX + ","
+                //         + newY + ") delta=(" + deltaX + "," + deltaY + ") visible=" + bubble.isVisible());
 
                 // Update if position changed by at least 1 pixel or visibility changed
                 if (deltaX >= 1 || deltaY >= 1 || !bubble.isVisible()) {
@@ -729,8 +786,8 @@ public class SpeechBubbleManager {
                     updateBubblePosition(playerRef, bubble, newX, newY);
                     updateCount++;
 
-                    System.out.println("[SpeechBubbles] Position UPDATE SENT #" + updateCount + ": (" + oldX + ","
-                            + oldY + ") -> (" + newX + "," + newY + ")");
+                    // System.out.println("[SpeechBubbles] Position UPDATE SENT #" + updateCount + ": (" + oldX + ","
+                    //         + oldY + ") -> (" + newX + "," + newY + ")");
                 }
 
             } catch (Exception e) {
@@ -740,8 +797,8 @@ public class SpeechBubbleManager {
             }
         }
 
-        System.out.println("[SpeechBubbles] Position update cycle complete: " + updateCount + "/" + bubbleCount
-                + " bubbles updated");
+        // System.out.println("[SpeechBubbles] Position update cycle complete: " + updateCount + "/" + bubbleCount
+        //         + " bubbles updated");
     }
 
     /**
@@ -750,10 +807,22 @@ public class SpeechBubbleManager {
     private void updateBubblePosition(@Nonnull PlayerRef playerRef, @Nonnull SpeechBubble bubble, int screenX,
             int screenY) {
         try {
+            // Final check: verify bubble is still active AND not being removed before sending
+            // This prevents race conditions where bubble was removed while update was queued
+            SpeechBubble currentBubble = activeBubbles.get(bubble.getBubbleId());
+            if (currentBubble == null || currentBubble.isRemoving()) {
+                return; // Bubble was removed or is being removed, don't send update
+            }
+            
+            // Also verify player is still online
+            PlayerRef currentPlayerRef = Universe.get().getPlayer(bubble.getPlayerUuid());
+            if (currentPlayerRef == null) {
+                return; // Player disconnected, don't send update
+            }
+            
             // Use UICommandBuilder to update the anchor position dynamically
-            // This is more efficient than clearing and re-sending the entire UI
             UICommandBuilder commandBuilder = new UICommandBuilder();
-
+            
             // Update the container position using stored dimensions
             Anchor anchor = new Anchor();
             anchor.setLeft(Value.of(Integer.valueOf(screenX)));
@@ -762,32 +831,31 @@ public class SpeechBubbleManager {
             anchor.setHeight(Value.of(Integer.valueOf(bubble.getBubbleHeight())));
             commandBuilder.setObject("#SpeechBubbleContainer.Anchor", anchor);
 
+            // Triple-check bubble is still active right before sending
+            currentBubble = activeBubbles.get(bubble.getBubbleId());
+            if (currentBubble == null || currentBubble.isRemoving()) {
+                return; // Bubble was removed during processing
+            }
+            
             // Send update without clearing existing UI (false = don't clear)
             CustomHud hudPacket = new CustomHud(false, commandBuilder.getCommands());
-            playerRef.getPacketHandler().writeNoCache(hudPacket);
+            currentPlayerRef.getPacketHandler().writeNoCache(hudPacket);
 
-            // Debug: log position updates occasionally
-            if (Math.random() < 0.05) { // Log ~5% of updates
-                System.out.println("[SpeechBubbles] UI position update sent: (" + screenX + "," + screenY + ")");
+            // // Debug: log position updates occasionally
+            // if (Math.random() < 0.05) { // Log ~5% of updates
+            //     System.out.println("[SpeechBubbles] UI position update sent: (" + screenX + "," + screenY + ")");
+            // }
+
+        } catch (Exception e) {
+            // Silently ignore "element not found" errors - these happen during race conditions
+            // when the bubble is being removed while an update is in flight
+            String message = e.getMessage();
+            if (message != null && (message.contains("not found") || message.contains("Selected element"))) {
+                // Expected during cleanup, no action needed
+                System.out.println("[SpeechBubbles] Position update skipped - bubble being removed");
+            } else {
+                System.err.println("[SpeechBubbles] Error updating position: " + e.getMessage());
             }
-
-        } catch (Exception e) {
-            System.err.println("[SpeechBubbles] Error updating position: " + e.getMessage());
-        }
-    }
-
-    /**
-     * Clear a bubble from screen (hide it).
-     */
-    private void clearBubbleAtPosition(@Nonnull PlayerRef playerRef, @Nonnull SpeechBubble bubble) {
-        try {
-            CustomHud hudPacket = new CustomHud(
-                    true, // Clear
-                    new UICommandBuilder().getCommands());
-
-            playerRef.getPacketHandler().writeNoCache(hudPacket);
-        } catch (Exception e) {
-            // Ignore errors
         }
     }
 
@@ -902,8 +970,12 @@ public class SpeechBubbleManager {
 
             // Get entity height from bounding box for accurate head position
             double entityHeight = getEntityHeightByUuid(entityUuid);
-            // Add configurable offset above head (default 0.2 blocks) to not cover the head
+            // Add configurable offset above head (0 = right at head level)
             double headOffset = entityHeight + config.getHeadOffset();
+            
+            System.out.println(String.format(
+                "[SpeechBubbles] Entity height: %.2f, headOffset: %.2f, final Y offset: %.2f",
+                entityHeight, config.getHeadOffset(), headOffset));
             
             // Calculate relative position (entity - player)
             double dx = entityPos.getX() - playerPos.getX();
@@ -912,11 +984,18 @@ public class SpeechBubbleManager {
 
             // Distance check - don't show if too far
             double distanceSquared = dx * dx + dy * dy + dz * dz;
-            if (distanceSquared > 2500) { // 50 blocks
+            int maxDistance = config.getMaxDistance();
+            if (distanceSquared > maxDistance * maxDistance) {
+                System.out.println("[SpeechBubbles] Entity too far: " + Math.sqrt(distanceSquared) + " blocks (max: " + maxDistance + ")");
                 return null;
             }
 
             // Screen dimensions
+            // NOTE: The Hytale server API does not expose the player's actual screen resolution.
+            // We use 1920x1080 as a reference resolution. The Hytale UI system handles scaling
+            // internally, so screen coordinates are transformed appropriately for each client.
+            // This may result in slight misalignment for non-16:9 aspect ratios, but the bubble
+            // will still be clamped to visible screen edges.
             final int SCREEN_WIDTH = 1920;
             final int SCREEN_HEIGHT = 1080;
             final int SCREEN_CENTER_X = SCREEN_WIDTH / 2;
@@ -929,10 +1008,11 @@ public class SpeechBubbleManager {
             
             // Apply camera rotations
             // Hytale uses Y-up, yaw rotates around Y, pitch rotates around X
-            // Note: playerYaw and playerPitch are already in radians, use directly
+            // Note: playerYaw and playerPitch are already in radians
+            // IMPORTANT: Apply pitch FIRST, then yaw, to avoid gimbal-like rotation issues
             Matrix4d rotTemp = new Matrix4d();
-            viewMatrix.rotateAxis(playerYaw, 0, 1, 0, rotTemp);   // Yaw around Y
-            viewMatrix.rotateAxis(playerPitch, 1, 0, 0, rotTemp); // Pitch around X
+            viewMatrix.rotateAxis(playerPitch, 1, 0, 0, rotTemp);  // Pitch around X (first)
+            viewMatrix.rotateAxis(playerYaw, 0, 1, 0, rotTemp);    // Yaw around Y (second)
             
             // Transform relative position through view matrix
             // multiplyDirection applies rotation only (no translation needed since we have relative pos)
@@ -941,30 +1021,25 @@ public class SpeechBubbleManager {
             
             // In camera space: -Z is forward (into screen), +X is right, +Y is up
             // Check if entity is behind camera (z > 0 means behind)
-            boolean isBehindCamera = camSpace.getZ() > -0.01;
+            boolean isBehindCamera = camSpace.getZ() > 0.01;
             
             // Perspective projection
             double fovRad = Math.toRadians(fov);
             double focalLength = (SCREEN_HEIGHT / 2.0) / Math.tan(fovRad / 2.0);
             
-            // Project: X and Y are scaled by focalLength / distance
-            // For entities behind camera, we use a virtual projection for edge clamping
+            // For entities behind camera, we clamp to screen edges differently
             double distance = Math.abs(camSpace.getZ());
             double scale = focalLength / Math.max(distance, 0.1);
             
             // Calculate raw screen coordinates
+            // When looking up (negative pitch), entities appear lower on screen (Y increases)
+            // When looking down (positive pitch), entities appear higher on screen (Y decreases)
             double rawX = camSpace.getX() * scale;
             double rawY = camSpace.getY() * scale;
             
-            // If behind camera, mirror the projection so it appears at the opposite edge
-            // This ensures the bubble stays visible at the screen edge closest to the entity
-            if (isBehindCamera) {
-                rawX = -rawX;
-                rawY = -rawY;
-            }
-            
+            // Screen coordinates: center + X, center - Y (Y is inverted for screen coords)
             int rawScreenX = SCREEN_CENTER_X + (int) rawX;
-            int rawScreenY = SCREEN_CENTER_Y - (int) rawY; // Y inverted
+            int rawScreenY = SCREEN_CENTER_Y - (int) rawY; // Y inverted: camera +Y (up) -> screen -Y (up)
             
             // Apply tail offset
             int screenX = rawScreenX - tailTipX;
@@ -972,32 +1047,49 @@ public class SpeechBubbleManager {
             
             // Debug output
             System.out.println(String.format(
-                "[SpeechBubbles] Yaw=%.1f Pitch=%.1f | Cam=(%.2f,%.2f,%.2f) | Scale=%.1f | Screen=(%d,%d)",
-                playerYaw, playerPitch, camSpace.getX(), camSpace.getY(), camSpace.getZ(), scale, screenX, screenY));
+                "[SpeechBubbles] Yaw=%.2f Pitch=%.2f | dPos=(%.2f,%.2f,%.2f) | Cam=(%.2f,%.2f,%.2f) | Screen=(%d,%d)",
+                playerYaw, playerPitch, dx, dy, dz,
+                camSpace.getX(), camSpace.getY(), camSpace.getZ(), 
+                screenX, screenY));
 
-            // Clamp bubble to screen edges with a margin so it's always partially visible
-            // This allows the bubble to be seen even when NPC is at screen edges or behind camera
-            final int VISIBLE_WIDTH = bubbleWidth / 2;   // Show at least half width
-            final int VISIBLE_HEIGHT = bubbleHeight / 2; // Show at least half height
+            // Clamp bubble to screen edges allowing half the bubble to be off-screen
+            // This ensures the bubble is always partially visible at screen edges
+            final int HALF_WIDTH = bubbleWidth / 2;
+            final int HALF_HEIGHT = bubbleHeight / 2;
             
-            // Clamp X: ensure at least half bubble is visible at left/right edges
-            int clampedX;
-            if (screenX < -VISIBLE_WIDTH) {
-                clampedX = -VISIBLE_WIDTH; // Clamp to left edge
-            } else if (screenX > SCREEN_WIDTH - VISIBLE_WIDTH) {
-                clampedX = SCREEN_WIDTH - VISIBLE_WIDTH; // Clamp to right edge
-            } else {
-                clampedX = screenX; // Within screen bounds
-            }
+            // Clamp limits: allow half off-screen
+            final int MIN_X = -HALF_WIDTH;
+            final int MAX_X = SCREEN_WIDTH - HALF_WIDTH;
+            final int MIN_Y = -HALF_HEIGHT;
+            final int MAX_Y = SCREEN_HEIGHT - HALF_HEIGHT;
             
-            // Clamp Y: ensure at least half bubble is visible at top/bottom edges
-            int clampedY;
-            if (screenY < -VISIBLE_HEIGHT) {
-                clampedY = -VISIBLE_HEIGHT; // Clamp to top edge
-            } else if (screenY > SCREEN_HEIGHT - VISIBLE_HEIGHT) {
-                clampedY = SCREEN_HEIGHT - VISIBLE_HEIGHT; // Clamp to bottom edge
+            int clampedX, clampedY;
+            
+            if (isBehindCamera) {
+                // Entity is behind camera - clamp to closest screen edge
+                // This keeps the bubble visible at the screen edge nearest to the entity
+                
+                // Clamp X: entity to the right -> right edge, to the left -> left edge
+                if (camSpace.getX() > 0) {
+                    clampedX = MAX_X; // Right edge
+                } else {
+                    clampedX = MIN_X; // Left edge
+                }
+                
+                // Clamp Y: entity above -> top edge, below -> bottom edge
+                if (camSpace.getY() > 0) {
+                    clampedY = MIN_Y; // Top edge
+                } else {
+                    clampedY = MAX_Y; // Bottom edge
+                }
+                
+                // System.out.println(String.format(
+                //     "[SpeechBubbles] Behind camera clamp: camSpace=(%.2f,%.2f) -> (%d,%d)",
+                //     camSpace.getX(), camSpace.getY(), clampedX, clampedY));
             } else {
-                clampedY = screenY; // Within screen bounds
+                // Entity is in front of camera - normal clamping to screen bounds (half off-screen allowed)
+                clampedX = Math.max(MIN_X, Math.min(screenX, MAX_X));
+                clampedY = Math.max(MIN_Y, Math.min(screenY, MAX_Y));
             }
 
             return new int[] { clampedX, clampedY };
