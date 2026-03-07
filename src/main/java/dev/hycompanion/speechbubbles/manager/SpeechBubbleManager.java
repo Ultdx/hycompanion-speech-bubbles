@@ -42,6 +42,7 @@ public class SpeechBubbleManager {
 
     // Unique ID generator for bubbles
     private static final AtomicLong bubbleIdCounter = new AtomicLong(0);
+    private static final long WORLD_THREAD_WAIT_TIMEOUT_MS = 250L;
 
     // Active bubbles: bubbleId -> SpeechBubble
     private final ConcurrentHashMap<UUID, SpeechBubble> activeBubbles = new ConcurrentHashMap<>();
@@ -51,6 +52,14 @@ public class SpeechBubbleManager {
 
     // Entity bubbles: entityUuid -> Set of bubbleIds
     private final ConcurrentHashMap<UUID, Set<UUID>> entityBubbles = new ConcurrentHashMap<>();
+    // Bubble entity world binding: bubbleId -> world name
+    private final ConcurrentHashMap<UUID, String> bubbleWorldNames = new ConcurrentHashMap<>();
+    // Bubble HUD epoch at creation time (bubbleId -> epoch)
+    private final ConcurrentHashMap<UUID, Long> bubbleHudEpochs = new ConcurrentHashMap<>();
+    // Per-player HUD epoch used to invalidate stale update packets
+    private final ConcurrentHashMap<UUID, AtomicLong> playerHudEpochs = new ConcurrentHashMap<>();
+    // Per-player lock to serialize HUD packet writes
+    private final ConcurrentHashMap<UUID, Object> playerHudLocks = new ConcurrentHashMap<>();
 
     // Scheduler for cleanup tasks
     private final ScheduledExecutorService scheduler;
@@ -58,6 +67,16 @@ public class SpeechBubbleManager {
     private final SpeechBubbleConfig config;
     private final SpeechBubblesEntrypoint plugin;
     private volatile boolean shutdown = false;
+
+    private static final class EntityLookup {
+        private final World world;
+        private final Ref<EntityStore> entityRef;
+
+        private EntityLookup(@Nonnull World world, @Nonnull Ref<EntityStore> entityRef) {
+            this.world = world;
+            this.entityRef = entityRef;
+        }
+    }
 
     public SpeechBubbleManager(@Nonnull SpeechBubbleConfig config, @Nonnull SpeechBubblesEntrypoint plugin) {
         this.config = config;
@@ -92,8 +111,19 @@ public class SpeechBubbleManager {
             return false;
         }
 
+        EntityLookup lookup = findEntityLookup(entityUuid);
+        if (lookup == null) {
+            System.err.println("[SpeechBubbles] Could not resolve world for entity " + entityUuid);
+            return false;
+        }
+
+        // Do not create cross-world bubbles.
+        if (!isEntityInWorld(playerUuid, lookup.world)) {
+            return false;
+        }
+
         // Get entity position
-        Vector3d entityPos = getEntityPosition(entityUuid);
+        Vector3d entityPos = getEntityPosition(lookup);
         if (entityPos == null) {
             System.err.println("[SpeechBubbles] Could not find entity position for " + entityUuid);
             return false;
@@ -140,9 +170,10 @@ public class SpeechBubbleManager {
         activeBubbles.put(bubbleId, bubble);
         playerBubbleSet.add(bubbleId);
         entityBubbles.computeIfAbsent(entityUuid, k -> ConcurrentHashMap.newKeySet()).add(bubbleId);
+        bubbleWorldNames.put(bubbleId, lookup.world.getName());
 
         // Send to player
-        boolean sent = sendBubbleToPlayer(bubble);
+        boolean sent = sendBubbleToPlayerOnWorldThread(bubble, lookup);
 
         if (sent) {
             // Schedule removal
@@ -259,7 +290,10 @@ public class SpeechBubbleManager {
         if (bubble == null) {
             return false;
         }
-        
+
+        // Mark as removing so in-flight position updates abort early
+        bubble.markRemoving();
+
         // Remove from tracking FIRST - this prevents position update task from seeing it
         removeBubble(bubbleId);
 
@@ -305,6 +339,10 @@ public class SpeechBubbleManager {
         activeBubbles.clear();
         playerBubbles.clear();
         entityBubbles.clear();
+        bubbleWorldNames.clear();
+        bubbleHudEpochs.clear();
+        playerHudEpochs.clear();
+        playerHudLocks.clear();
 
         // Shutdown scheduler
         scheduler.shutdownNow();
@@ -482,45 +520,51 @@ public class SpeechBubbleManager {
 
             // Build UI commands
             UICommandBuilder commandBuilder = new UICommandBuilder();
-            
-            // Always clear HUD first when showing a new bubble
-            // This ensures only one bubble is visible at a time per player (prevents crashes)
-            CustomHud clearPacket = new CustomHud(true, new UICommandBuilder().getCommands());
-            playerRef.getPacketHandler().writeNoCache(clearPacket);
-            
-            // Append the SpeechBubble.ui
-            commandBuilder.append("SpeechBubble.ui");
-            
-            // Set the main container anchor
-            Anchor containerAnchor = new Anchor();
-            containerAnchor.setLeft(Value.of(Integer.valueOf(screenPos[0])));
-            containerAnchor.setTop(Value.of(Integer.valueOf(screenPos[1])));
-            containerAnchor.setWidth(Value.of(Integer.valueOf(bubbleWidth)));
-            containerAnchor.setHeight(Value.of(Integer.valueOf(bubbleHeight)));
-            commandBuilder.setObject("#SpeechBubbleContainer.Anchor", containerAnchor);
-        
-            // Set text area dimensions
-            Anchor textAreaAnchor = new Anchor();
-            textAreaAnchor.setLeft(Value.of(Integer.valueOf(25)));
-            textAreaAnchor.setTop(Value.of(Integer.valueOf(25)));
-            textAreaAnchor.setWidth(Value.of(Integer.valueOf(textWidth)));
-            textAreaAnchor.setHeight(Value.of(Integer.valueOf(textHeight)));
-            commandBuilder.setObject("#TextArea.Anchor", textAreaAnchor);
-            
-            // Set the text
-            commandBuilder.set("#MessageText.Text", escapeForUI(displayText));
-            
-            // Set text color if specified
-            if (!bubble.getOptions().getTextColor().equals(SpeechBubbleOptions.DEFAULT_TEXT_COLOR)) {
-                commandBuilder.set("#MessageText.Style.TextColor", bubble.getOptions().getTextColor());
+
+            Object hudLock = getPlayerHudLock(bubble.getPlayerUuid());
+            synchronized (hudLock) {
+                long hudEpoch = bumpPlayerHudEpoch(bubble.getPlayerUuid());
+
+                // Always clear HUD first when showing a new bubble
+                // This ensures only one bubble is visible at a time per player (prevents crashes)
+                CustomHud clearPacket = new CustomHud(true, new UICommandBuilder().getCommands());
+                playerRef.getPacketHandler().writeNoCache(clearPacket);
+
+                // Append the SpeechBubble.ui
+                commandBuilder.append("SpeechBubble.ui");
+
+                // Set the main container anchor
+                Anchor containerAnchor = new Anchor();
+                containerAnchor.setLeft(Value.of(Integer.valueOf(screenPos[0])));
+                containerAnchor.setTop(Value.of(Integer.valueOf(screenPos[1])));
+                containerAnchor.setWidth(Value.of(Integer.valueOf(bubbleWidth)));
+                containerAnchor.setHeight(Value.of(Integer.valueOf(bubbleHeight)));
+                commandBuilder.setObject("#SpeechBubbleContainer.Anchor", containerAnchor);
+
+                // Set text area dimensions
+                Anchor textAreaAnchor = new Anchor();
+                textAreaAnchor.setLeft(Value.of(Integer.valueOf(25)));
+                textAreaAnchor.setTop(Value.of(Integer.valueOf(25)));
+                textAreaAnchor.setWidth(Value.of(Integer.valueOf(textWidth)));
+                textAreaAnchor.setHeight(Value.of(Integer.valueOf(textHeight)));
+                commandBuilder.setObject("#TextArea.Anchor", textAreaAnchor);
+
+                // Set the text
+                commandBuilder.set("#MessageText.Text", escapeForUI(displayText));
+
+                // Set text color if specified
+                if (!bubble.getOptions().getTextColor().equals(SpeechBubbleOptions.DEFAULT_TEXT_COLOR)) {
+                    commandBuilder.set("#MessageText.Style.TextColor", bubble.getOptions().getTextColor());
+                }
+
+                CustomHud hudPacket = new CustomHud(
+                        false, // Don't clear existing HUD (we already cleared above)
+                        commandBuilder.getCommands());
+
+                // Send to player
+                playerRef.getPacketHandler().writeNoCache(hudPacket);
+                bubbleHudEpochs.put(bubble.getBubbleId(), Long.valueOf(hudEpoch));
             }
-
-            CustomHud hudPacket = new CustomHud(
-                    false, // Don't clear existing HUD (we already cleared above)
-                    commandBuilder.getCommands());
-
-            // Send to player
-            playerRef.getPacketHandler().writeNoCache(hudPacket);
 
             System.out.println("[SpeechBubbles] Bubble SENT " + bubble.getBubbleId() + 
                     " at screen (" + screenPos[0] + ", " + screenPos[1] + ")");
@@ -534,6 +578,10 @@ public class SpeechBubbleManager {
             e.printStackTrace();
             return false;
         }
+    }
+
+    private boolean sendBubbleToPlayerOnWorldThread(@Nonnull SpeechBubble bubble, @Nonnull EntityLookup lookup) {
+        return executeOnWorldThread(lookup.world, () -> sendBubbleToPlayer(bubble), false, "sendBubbleToPlayer");
     }
     
     /**
@@ -556,12 +604,18 @@ public class SpeechBubbleManager {
                 return;
             }
 
-            // Clear entire HUD (simple and reliable for single-bubble mode)
-            CustomHud hudPacket = new CustomHud(
-                    true, // Clear HUD
-                    new UICommandBuilder().getCommands()
-            );
-            playerRef.getPacketHandler().writeNoCache(hudPacket);
+            Object hudLock = getPlayerHudLock(bubble.getPlayerUuid());
+            synchronized (hudLock) {
+                // Invalidate any in-flight position updates before sending clear.
+                bumpPlayerHudEpoch(bubble.getPlayerUuid());
+
+                // Clear entire HUD (simple and reliable for single-bubble mode)
+                CustomHud hudPacket = new CustomHud(
+                        true, // Clear HUD
+                        new UICommandBuilder().getCommands()
+                );
+                playerRef.getPacketHandler().writeNoCache(hudPacket);
+            }
 
         } catch (Exception e) {
             // Ignore errors during cleanup
@@ -584,6 +638,8 @@ public class SpeechBubbleManager {
      */
     private void removeBubble(@Nonnull UUID bubbleId) {
         SpeechBubble bubble = activeBubbles.remove(bubbleId);
+        bubbleHudEpochs.remove(bubbleId);
+        bubbleWorldNames.remove(bubbleId);
         if (bubble != null) {
             Set<UUID> playerSet = playerBubbles.get(bubble.getPlayerUuid());
             if (playerSet != null) {
@@ -658,42 +714,65 @@ public class SpeechBubbleManager {
 
     /**
      * Start the position update task that updates bubble screen positions.
-     * 
-     * NOTE: Position updates must run on the world thread to access entity data safely.
-     * We schedule on the default world, but this means bubbles only update correctly
-     * when the player is in the default world. For multi-world support, this would need
-     * to be enhanced to track which world each bubble is in.
+     * Updates are dispatched to each bubble's world thread.
      */
     private void startPositionUpdateTask() {
         // ~60 FPS for smooth updates (16ms interval)
         final long UPDATE_INTERVAL_MS = 16;
-        System.out.println("[SpeechBubbles] Starting position update task (every " + UPDATE_INTERVAL_MS + "ms on world thread)");
+        System.out.println("[SpeechBubbles] Starting position update task (every " + UPDATE_INTERVAL_MS + "ms across world threads)");
         
         scheduler.scheduleAtFixedRate(() -> {
             try {
                 if (shutdown) {
                     return;
                 }
-                
-                // Schedule the actual update on the world thread
-                // We use the default world for simplicity - player and entity should be in same world
-                World world = Universe.get().getDefaultWorld();
-                if (world != null) {
-                    world.execute(() -> {
-                        try {
-                            if (!shutdown) {
-                                updateBubblePositions();
-                            }
-                        } catch (Exception e) {
-                            System.err.println("[SpeechBubbles] Exception in world thread update: " + e.getMessage());
-                        }
-                    });
-                }
+
+                dispatchWorldPositionUpdates();
             } catch (Exception e) {
                 System.err.println("[SpeechBubbles] Exception scheduling position update: " + e.getMessage());
                 e.printStackTrace();
             }
         }, UPDATE_INTERVAL_MS, UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS); // ~60 updates per second
+    }
+
+    private void dispatchWorldPositionUpdates() {
+        if (activeBubbles.isEmpty()) {
+            return;
+        }
+
+        Universe universe = Universe.get();
+        if (universe == null) {
+            return;
+        }
+
+        Set<String> worldNames = new HashSet<>();
+        for (UUID bubbleId : activeBubbles.keySet()) {
+            String worldName = bubbleWorldNames.get(bubbleId);
+            if (worldName != null && !worldName.isEmpty()) {
+                worldNames.add(worldName);
+            }
+        }
+
+        for (String worldName : worldNames) {
+            World world = universe.getWorld(worldName);
+            if (world == null) {
+                continue;
+            }
+            try {
+                world.execute(() -> {
+                    try {
+                        if (!shutdown) {
+                            updateBubblePositions(worldName);
+                        }
+                    } catch (Exception e) {
+                        System.err.println("[SpeechBubbles] Exception in world thread update (" + worldName + "): "
+                                + e.getMessage());
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                System.err.println("[SpeechBubbles] World update task rejected for world " + worldName);
+            }
+        }
     }
 
     /**
@@ -702,8 +781,7 @@ public class SpeechBubbleManager {
      * NOTE: This method now runs on the world thread (via world.execute()),
      * so it can safely access entity and player transform data.
      */
-    private void updateBubblePositions() {
-        int bubbleCount = activeBubbles.size();
+    private void updateBubblePositions(@Nonnull String worldName) {
 
         // // Debug: log when task runs
         // if (bubbleCount > 0) {
@@ -714,10 +792,13 @@ public class SpeechBubbleManager {
             return;
         }
 
-        int updateCount = 0;
-
         for (SpeechBubble bubble : activeBubbles.values()) {
             try {
+                String bubbleWorldName = bubbleWorldNames.get(bubble.getBubbleId());
+                if (bubbleWorldName == null || !bubbleWorldName.equals(worldName)) {
+                    continue;
+                }
+
                 // Verify bubble is still active and not being removed
                 if (!activeBubbles.containsKey(bubble.getBubbleId()) || bubble.isRemoving()) {
                     continue;
@@ -733,8 +814,19 @@ public class SpeechBubbleManager {
                     continue;
                 }
 
-                // Get FRESH entity position from world (safe to do on world thread)
-                Vector3d entityPos = getEntityPosition(bubble.getEntityUuid());
+                if (!isEntityInWorld(bubble.getPlayerUuid(), worldName)) {
+                    hideBubble(bubble.getBubbleId());
+                    continue;
+                }
+
+                EntityLookup entityLookup = findEntityLookupInWorld(worldName, bubble.getEntityUuid());
+                if (entityLookup == null) {
+                    hideBubble(bubble.getBubbleId());
+                    continue;
+                }
+
+                // Get FRESH entity position from the bound world (safe on this world thread)
+                Vector3d entityPos = getEntityPosition(entityLookup);
                 if (entityPos != null) {
                     // Update stored position
                     bubble.setEntityPosition(entityPos.getX(), entityPos.getY(), entityPos.getZ());
@@ -784,7 +876,6 @@ public class SpeechBubbleManager {
                 if (deltaX >= 1 || deltaY >= 1 || !bubble.isVisible()) {
                     bubble.setScreenPosition(newX, newY, true);
                     updateBubblePosition(playerRef, bubble, newX, newY);
-                    updateCount++;
 
                     // System.out.println("[SpeechBubbles] Position UPDATE SENT #" + updateCount + ": (" + oldX + ","
                     //         + oldY + ") -> (" + newX + "," + newY + ")");
@@ -797,7 +888,7 @@ public class SpeechBubbleManager {
             }
         }
 
-        // System.out.println("[SpeechBubbles] Position update cycle complete: " + updateCount + "/" + bubbleCount
+        // System.out.println("[SpeechBubbles] Position update cycle complete
         //         + " bubbles updated");
     }
 
@@ -807,6 +898,11 @@ public class SpeechBubbleManager {
     private void updateBubblePosition(@Nonnull PlayerRef playerRef, @Nonnull SpeechBubble bubble, int screenX,
             int screenY) {
         try {
+            Long expectedEpoch = bubbleHudEpochs.get(bubble.getBubbleId());
+            if (expectedEpoch == null) {
+                return;
+            }
+
             // Final check: verify bubble is still active AND not being removed before sending
             // This prevents race conditions where bubble was removed while update was queued
             SpeechBubble currentBubble = activeBubbles.get(bubble.getBubbleId());
@@ -820,26 +916,34 @@ public class SpeechBubbleManager {
                 return; // Player disconnected, don't send update
             }
             
-            // Use UICommandBuilder to update the anchor position dynamically
-            UICommandBuilder commandBuilder = new UICommandBuilder();
-            
-            // Update the container position using stored dimensions
-            Anchor anchor = new Anchor();
-            anchor.setLeft(Value.of(Integer.valueOf(screenX)));
-            anchor.setTop(Value.of(Integer.valueOf(screenY)));
-            anchor.setWidth(Value.of(Integer.valueOf(bubble.getBubbleWidth())));
-            anchor.setHeight(Value.of(Integer.valueOf(bubble.getBubbleHeight())));
-            commandBuilder.setObject("#SpeechBubbleContainer.Anchor", anchor);
+            Object hudLock = getPlayerHudLock(bubble.getPlayerUuid());
+            synchronized (hudLock) {
+                long currentEpoch = getPlayerHudEpoch(bubble.getPlayerUuid());
+                if (currentEpoch != expectedEpoch.longValue()) {
+                    return; // UI was rebuilt/cleared, skip stale update
+                }
 
-            // Triple-check bubble is still active right before sending
-            currentBubble = activeBubbles.get(bubble.getBubbleId());
-            if (currentBubble == null || currentBubble.isRemoving()) {
-                return; // Bubble was removed during processing
+                // Triple-check bubble is still active right before sending
+                currentBubble = activeBubbles.get(bubble.getBubbleId());
+                if (currentBubble == null || currentBubble.isRemoving()) {
+                    return; // Bubble was removed during processing
+                }
+
+                // Use UICommandBuilder to update the anchor position dynamically
+                UICommandBuilder commandBuilder = new UICommandBuilder();
+
+                // Update the container position using stored dimensions
+                Anchor anchor = new Anchor();
+                anchor.setLeft(Value.of(Integer.valueOf(screenX)));
+                anchor.setTop(Value.of(Integer.valueOf(screenY)));
+                anchor.setWidth(Value.of(Integer.valueOf(bubble.getBubbleWidth())));
+                anchor.setHeight(Value.of(Integer.valueOf(bubble.getBubbleHeight())));
+                commandBuilder.setObject("#SpeechBubbleContainer.Anchor", anchor);
+
+                // Send update without clearing existing UI (false = don't clear)
+                CustomHud hudPacket = new CustomHud(false, commandBuilder.getCommands());
+                currentPlayerRef.getPacketHandler().writeNoCache(hudPacket);
             }
-            
-            // Send update without clearing existing UI (false = don't clear)
-            CustomHud hudPacket = new CustomHud(false, commandBuilder.getCommands());
-            currentPlayerRef.getPacketHandler().writeNoCache(hudPacket);
 
             // // Debug: log position updates occasionally
             // if (Math.random() < 0.05) { // Log ~5% of updates
@@ -881,40 +985,22 @@ public class SpeechBubbleManager {
      */
     @Nullable
     private Vector3d getEntityPosition(@Nonnull UUID entityUuid) {
-        try {
-            Universe universe = Universe.get();
-            if (universe == null) {
-                System.out.println("[SpeechBubbles] getEntityPosition: Universe is null");
-                return null;
-            }
-            
-            java.util.Collection<World> worlds = universe.getWorlds().values();
-            if (worlds.isEmpty()) {
-                System.out.println("[SpeechBubbles] getEntityPosition: No worlds available");
-                return null;
-            }
-            
-            // Try to find entity in all worlds
-            for (World world : worlds) {
-                EntityStore entityStore = world.getEntityStore();
-                if (entityStore != null) {
-                    Ref<EntityStore> entityRef = entityStore.getRefFromUUID(entityUuid);
-                    if (entityRef != null && entityRef.isValid()) {
-                        Store<EntityStore> store = entityRef.getStore();
-                        TransformComponent transform = store.getComponent(entityRef,
-                                TransformComponent.getComponentType());
-                        if (transform != null) {
-                            return transform.getPosition();
-                        }
-                    }
-                }
-            }
+        EntityLookup lookup = findEntityLookup(entityUuid);
+        if (lookup == null) {
             System.out.println("[SpeechBubbles] getEntityPosition: Entity " + entityUuid + " not found in any world");
-        } catch (Exception e) {
-            System.err.println("[SpeechBubbles] getEntityPosition error: " + e.getMessage());
-            e.printStackTrace();
+            return null;
         }
-        return null;
+
+        return getEntityPosition(lookup);
+    }
+
+    @Nullable
+    private Vector3d getEntityPosition(@Nonnull EntityLookup lookup) {
+        return executeOnWorldThread(lookup.world, () -> {
+            Store<EntityStore> store = lookup.entityRef.getStore();
+            TransformComponent transform = store.getComponent(lookup.entityRef, TransformComponent.getComponentType());
+            return transform != null ? transform.getPosition() : null;
+        }, null, "getEntityPosition");
     }
 
     /**
@@ -973,9 +1059,9 @@ public class SpeechBubbleManager {
             // Add configurable offset above head (0 = right at head level)
             double headOffset = entityHeight + config.getHeadOffset();
             
-            System.out.println(String.format(
-                "[SpeechBubbles] Entity height: %.2f, headOffset: %.2f, final Y offset: %.2f",
-                entityHeight, config.getHeadOffset(), headOffset));
+            // System.out.println(String.format(
+            //     "[SpeechBubbles] Entity height: %.2f, headOffset: %.2f, final Y offset: %.2f",
+            //     entityHeight, config.getHeadOffset(), headOffset));
             
             // Calculate relative position (entity - player)
             double dx = entityPos.getX() - playerPos.getX();
@@ -1045,12 +1131,12 @@ public class SpeechBubbleManager {
             int screenX = rawScreenX - tailTipX;
             int screenY = rawScreenY - tailTipY;
             
-            // Debug output
-            System.out.println(String.format(
-                "[SpeechBubbles] Yaw=%.2f Pitch=%.2f | dPos=(%.2f,%.2f,%.2f) | Cam=(%.2f,%.2f,%.2f) | Screen=(%d,%d)",
-                playerYaw, playerPitch, dx, dy, dz,
-                camSpace.getX(), camSpace.getY(), camSpace.getZ(), 
-                screenX, screenY));
+            // // Debug output
+            // System.out.println(String.format(
+            //     "[SpeechBubbles] Yaw=%.2f Pitch=%.2f | dPos=(%.2f,%.2f,%.2f) | Cam=(%.2f,%.2f,%.2f) | Screen=(%d,%d)",
+            //     playerYaw, playerPitch, dx, dy, dz,
+            //     camSpace.getX(), camSpace.getY(), camSpace.getZ(), 
+            //     screenX, screenY));
 
             // Clamp bubble to screen edges allowing half the bubble to be off-screen
             // This ensures the bubble is always partially visible at screen edges
@@ -1140,40 +1226,171 @@ public class SpeechBubbleManager {
      * @return Entity height in blocks, or default 1.8 if not found
      */
     private double getEntityHeightByUuid(@Nonnull UUID entityUuid) {
+        EntityLookup lookup = findEntityLookup(entityUuid);
+        if (lookup == null) {
+            return 1.8;
+        }
+
+        Double height = executeOnWorldThread(lookup.world, () -> {
+            Store<EntityStore> store = lookup.entityRef.getStore();
+            BoundingBox boundingBox = store.getComponent(lookup.entityRef, BoundingBox.getComponentType());
+            if (boundingBox == null) {
+                return null;
+            }
+
+            Box box = boundingBox.getBoundingBox();
+            if (box == null) {
+                return null;
+            }
+
+            double value = box.height();
+            return (value > 0.1 && value < 10.0) ? value : null;
+        }, null, "getEntityHeightByUuid");
+
+        return height != null ? height.doubleValue() : 1.8; // Default player height
+    }
+
+    @Nullable
+    private EntityLookup findEntityLookup(@Nonnull UUID entityUuid) {
         try {
             Universe universe = Universe.get();
             if (universe == null) {
-                return 1.8;
+                return null;
             }
-            
-            // Search in all worlds for the entity
-            for (World world : universe.getWorlds().values()) {
+
+            java.util.Collection<World> worlds = universe.getWorlds().values();
+            if (worlds.isEmpty()) {
+                return null;
+            }
+
+            for (World world : worlds) {
                 EntityStore entityStore = world.getEntityStore();
-                if (entityStore != null) {
-                    Ref<EntityStore> entityRef = entityStore.getRefFromUUID(entityUuid);
-                    if (entityRef != null && entityRef.isValid()) {
-                        Store<EntityStore> store = entityRef.getStore();
-                        
-                        // Try to get BoundingBox component
-                        BoundingBox boundingBox = store.getComponent(entityRef, 
-                                BoundingBox.getComponentType());
-                        if (boundingBox != null) {
-                            Box box = boundingBox.getBoundingBox();
-                            if (box != null) {
-                                double height = box.height();
-                                // Sanity check: height should be between 0.1 and 10 blocks
-                                if (height > 0.1 && height < 10.0) {
-                                    return height;
-                                }
-                            }
-                        }
-                    }
+                if (entityStore == null) {
+                    continue;
+                }
+
+                Ref<EntityStore> entityRef = entityStore.getRefFromUUID(entityUuid);
+                if (entityRef != null && entityRef.isValid()) {
+                    return new EntityLookup(world, entityRef);
                 }
             }
         } catch (Exception e) {
-            System.err.println("[SpeechBubbles] Error getting entity height: " + e.getMessage());
+            System.err.println("[SpeechBubbles] findEntityLookup error: " + e.getMessage());
         }
-        return 1.8; // Default player height
+        return null;
+    }
+
+    @Nullable
+    private EntityLookup findEntityLookupInWorld(@Nonnull String worldName, @Nonnull UUID entityUuid) {
+        try {
+            Universe universe = Universe.get();
+            if (universe == null) {
+                return null;
+            }
+
+            World world = universe.getWorld(worldName);
+            if (world == null) {
+                return null;
+            }
+
+            EntityStore entityStore = world.getEntityStore();
+            if (entityStore == null) {
+                return null;
+            }
+
+            Ref<EntityStore> entityRef = entityStore.getRefFromUUID(entityUuid);
+            if (entityRef != null && entityRef.isValid()) {
+                return new EntityLookup(world, entityRef);
+            }
+        } catch (Exception e) {
+            System.err.println("[SpeechBubbles] findEntityLookupInWorld error: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private boolean isEntityInWorld(@Nonnull UUID entityUuid, @Nonnull World world) {
+        return isEntityInWorld(entityUuid, world.getName());
+    }
+
+    private boolean isEntityInWorld(@Nonnull UUID entityUuid, @Nonnull String worldName) {
+        try {
+            if (worldName == null || worldName.isEmpty()) {
+                return false;
+            }
+            Universe universe = Universe.get();
+            if (universe == null) {
+                return false;
+            }
+            World world = universe.getWorld(worldName);
+            if (world == null) {
+                return false;
+            }
+
+            EntityStore entityStore = world.getEntityStore();
+            if (entityStore == null) {
+                return false;
+            }
+            Ref<EntityStore> ref = entityStore.getRefFromUUID(entityUuid);
+            return ref != null && ref.isValid();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isOnWorldThread(@Nonnull World world) {
+        String threadName = Thread.currentThread().getName();
+        String worldName = world.getName();
+        return threadName.contains("WorldThread") && worldName != null && threadName.contains(worldName);
+    }
+
+    @Nullable
+    private <T> T executeOnWorldThread(@Nonnull World world, @Nonnull Callable<T> task, @Nullable T fallback,
+            @Nonnull String operationName) {
+        if (isOnWorldThread(world)) {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                System.err.println("[SpeechBubbles] " + operationName + " (direct) error: " + e.getMessage());
+                return fallback;
+            }
+        }
+
+        CompletableFuture<T> future = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    future.complete(task.call());
+                } catch (Exception e) {
+                    future.completeExceptionally(e);
+                }
+            });
+            return future.get(WORLD_THREAD_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            System.err.println("[SpeechBubbles] " + operationName + " rejected by world executor");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("[SpeechBubbles] " + operationName + " interrupted");
+        } catch (TimeoutException e) {
+            System.err.println("[SpeechBubbles] " + operationName + " timed out after "
+                    + WORLD_THREAD_WAIT_TIMEOUT_MS + "ms");
+        } catch (ExecutionException e) {
+            System.err.println("[SpeechBubbles] " + operationName + " execution error: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("[SpeechBubbles] " + operationName + " unexpected error: " + e.getMessage());
+        }
+        return fallback;
+    }
+
+    private Object getPlayerHudLock(@Nonnull UUID playerUuid) {
+        return playerHudLocks.computeIfAbsent(playerUuid, ignored -> new Object());
+    }
+
+    private long bumpPlayerHudEpoch(@Nonnull UUID playerUuid) {
+        return playerHudEpochs.computeIfAbsent(playerUuid, ignored -> new AtomicLong(0)).incrementAndGet();
+    }
+
+    private long getPlayerHudEpoch(@Nonnull UUID playerUuid) {
+        return playerHudEpochs.computeIfAbsent(playerUuid, ignored -> new AtomicLong(0)).get();
     }
 
     /**
